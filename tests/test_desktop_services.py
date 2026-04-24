@@ -1,0 +1,183 @@
+"""Tests for desktop dashboard services and runtime tracking."""
+
+import asyncio
+import csv
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from desktop_app.services.file_service import build_source_summary
+from scraper.browser_launcher import build_launch_options
+from scraper.control import responsive_sleep
+from scraper.runtime import ScraperRuntimeController
+
+
+class DesktopServiceTests(unittest.TestCase):
+    """Exercise summary building and runtime controller updates."""
+
+    def test_browser_headless_option_is_passed_to_launch_options(self):
+        options = build_launch_options(
+            True,
+            "Mozilla/5.0 Test",
+            executable_path=r"C:\Browser\chrome.exe",
+        )
+
+        self.assertTrue(options["headless"])
+        self.assertEqual(options["user_agent"], "Mozilla/5.0 Test")
+        self.assertEqual(options["executable_path"], r"C:\Browser\chrome.exe")
+
+    def test_build_source_summary_counts_files_statuses_and_quality_mix(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            master_file = root / "houzz_emails.csv"
+            detail_file = root / "houzz_results_detailed.csv"
+            status_file = root / "houzz_scrape_status.csv"
+            fail_log_file = root / "houzz_failures.csv"
+            final_file = root / "houzz_final.csv"
+            final_detail_file = root / "houzz_final_detail.csv"
+
+            master_file.write_text("Email\none@example.com\ntwo@example.com\n", encoding="utf-8")
+            final_file.write_text("Email\none@example.com\n", encoding="utf-8")
+            fail_log_file.write_text(
+                "timestamp,step,profile_url,target_url,error\n",
+                encoding="utf-8",
+            )
+            final_detail_file.write_text(
+                "Email,Quality,Reason,Name,Website,Profile\n",
+                encoding="utf-8",
+            )
+
+            with detail_file.open("w", newline="", encoding="utf-8") as file_obj:
+                writer = csv.DictWriter(
+                    file_obj,
+                    fieldnames=[
+                        "email",
+                        "name",
+                        "houzz_profile",
+                        "website",
+                        "facebook",
+                        "sources",
+                        "email_quality",
+                        "email_quality_reason",
+                        "saved_to_master_output",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerows(
+                    [
+                        {
+                            "email": "one@example.com",
+                            "name": "Example One",
+                            "houzz_profile": "profile-1",
+                            "website": "https://example.com",
+                            "facebook": "",
+                            "sources": "website",
+                            "email_quality": "high",
+                            "email_quality_reason": "reason-1",
+                            "saved_to_master_output": "1",
+                        },
+                        {
+                            "email": "two@gmail.com",
+                            "name": "Example Two",
+                            "houzz_profile": "profile-2",
+                            "website": "https://example.org",
+                            "facebook": "",
+                            "sources": "website",
+                            "email_quality": "medium",
+                            "email_quality_reason": "reason-2",
+                            "saved_to_master_output": "1",
+                        },
+                        {
+                            "email": "three@yahoo.com",
+                            "name": "Example Three",
+                            "houzz_profile": "profile-3",
+                            "website": "https://example.net",
+                            "facebook": "",
+                            "sources": "website",
+                            "email_quality": "low",
+                            "email_quality_reason": "reason-3",
+                            "saved_to_master_output": "0",
+                        },
+                    ]
+                )
+
+            with status_file.open("w", newline="", encoding="utf-8") as file_obj:
+                writer = csv.writer(file_obj)
+                writer.writerow(["profile_url", "status", "detail", "updated_at"])
+                writer.writerow(["profile-1", "processed", "", "2026-04-24T09:00:00"])
+                writer.writerow(["profile-2", "failed", "", "2026-04-24T09:01:00"])
+                writer.writerow(["profile-3", "no_email", "", "2026-04-24T09:02:00"])
+                writer.writerow(["profile-2", "processed", "", "2026-04-24T09:03:00"])
+
+            fake_paths = {
+                "source": "houzz",
+                "output_file": str(master_file),
+                "detail_output_file": str(detail_file),
+                "status_file": str(status_file),
+                "fail_log_file": str(fail_log_file),
+                "final_output_file": str(final_file),
+                "final_detail_file": str(final_detail_file),
+            }
+
+            with patch(
+                "desktop_app.services.file_service.get_source_paths",
+                return_value=fake_paths,
+            ):
+                summary = build_source_summary("houzz")
+
+            self.assertEqual(summary.master_count, 2)
+            self.assertEqual(summary.detail_count, 3)
+            self.assertEqual(summary.final_count, 1)
+            self.assertEqual(summary.tracked_profiles, 3)
+            self.assertEqual(summary.processed_count, 2)
+            self.assertEqual(summary.failed_count, 0)
+            self.assertEqual(summary.no_email_count, 1)
+            self.assertEqual(summary.high_quality_count, 1)
+            self.assertEqual(summary.medium_quality_count, 1)
+            self.assertEqual(summary.low_quality_count, 1)
+            self.assertEqual(summary.last_updated, "2026-04-24T09:03:00")
+
+    def test_runtime_controller_tracks_progress_and_completion(self):
+        runtime = ScraperRuntimeController()
+        runtime.start_run("houzz", "https://example.com", max_profiles=10)
+        runtime.register_page(1, discovered_count=6)
+        runtime.record_skipped_profile("profile-skip")
+        runtime.record_attempted_profile("profile-1")
+        runtime.record_profile_result(
+            "profile-1",
+            {"status": "processed", "master_saved": 2, "detail_saved": 2},
+        )
+        runtime.record_export(
+            {
+                "count": 2,
+                "final_output_file": "final.csv",
+                "final_detail_file": "detail.csv",
+            }
+        )
+        runtime.complete_run()
+
+        snapshot = runtime.snapshot()
+        self.assertEqual(snapshot.run_state, "completed")
+        self.assertEqual(snapshot.current_page, 1)
+        self.assertEqual(snapshot.profiles_discovered, 6)
+        self.assertEqual(snapshot.profiles_skipped, 1)
+        self.assertEqual(snapshot.profiles_attempted, 1)
+        self.assertEqual(snapshot.processed, 1)
+        self.assertEqual(snapshot.master_saved, 2)
+        self.assertEqual(snapshot.detail_saved, 2)
+        self.assertEqual(snapshot.final_export_count, 2)
+        self.assertAlmostEqual(snapshot.progress_ratio, 0.2)
+
+    def test_responsive_sleep_returns_when_stop_is_requested(self):
+        async def scenario():
+            runtime = ScraperRuntimeController()
+            runtime.start_run("houzz", "https://example.com")
+            runtime.request_stop()
+            return await responsive_sleep(5, runtime=runtime, interval=0.01)
+
+        self.assertTrue(asyncio.run(scenario()))
+
+
+if __name__ == "__main__":
+    unittest.main()

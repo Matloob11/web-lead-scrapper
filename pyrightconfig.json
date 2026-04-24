@@ -1,0 +1,24 @@
+{
+  "include": [
+    "scraper",
+    "desktop_app",
+    "tools",
+    "tests",
+    "houzz_pro_scraper.py",
+    "gui_app.py"
+  ],
+  "exclude": [".venv/**", "scratch/**", "**/__pycache__/**"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Windows",
+  "typeCheckingMode": "basic",
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": ["."]
+    }
+  ],
+  "reportMissingModuleSource": "none",
+  "reportMissingTypeStubs": "none"
+}

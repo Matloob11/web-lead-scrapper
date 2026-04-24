@@ -1,16 +1,29 @@
-import asyncio
+"""Website crawling helpers for extracting visible business contact emails."""
+
 import random
 from urllib.parse import urljoin, urlparse
 
-from playwright_stealth import Stealth
+from playwright.async_api import Error as PlaywrightError
+from playwright_stealth import Stealth  # type: ignore[import-untyped]
 
-from scraper.browser_helpers import extract_page_emails, get_anchor_candidates, goto_with_retry
-from scraper.config import CONTACT_TIMEOUT_MS, FOLLOWUP_PAGE_LIMIT, FOLLOWUP_PATHS, SITE_TIMEOUT_MS
+from scraper.browser_helpers import (
+    extract_page_emails,
+    get_anchor_candidates,
+    goto_with_retry,
+)
+from scraper.config import (
+    CONTACT_TIMEOUT_MS,
+    FOLLOWUP_PAGE_LIMIT,
+    FOLLOWUP_PATHS,
+    SITE_TIMEOUT_MS,
+)
+from scraper.control import responsive_sleep
 from scraper.storage.csv_storage import log_failure
 from scraper.utils import normalize_external_url
 
 
 def get_domain_cache_key(url):
+    """Return a normalized cache key for the site's hostname."""
     normalized_url = normalize_external_url(url)
     if not normalized_url or normalized_url.startswith("/"):
         return ""
@@ -21,6 +34,7 @@ def get_domain_cache_key(url):
 
 
 def build_site_followup_urls(candidates, base_url):
+    """Build and rank likely contact/about follow-up URLs for a site."""
     normalized_base = normalize_external_url(base_url)
     if not normalized_base or normalized_base.startswith("/"):
         return []
@@ -56,7 +70,11 @@ def build_site_followup_urls(candidates, base_url):
             score += 10
         if "about" in label or "/about" in absolute_lower:
             score += 7
-        if "get in touch" in label or "get-in-touch" in absolute_lower or "getintouch" in absolute_lower:
+        if (
+            "get in touch" in label
+            or "get-in-touch" in absolute_lower
+            or "getintouch" in absolute_lower
+        ):
             score += 6
         if "support" in label or "/support" in absolute_lower:
             score += 5
@@ -85,10 +103,21 @@ def build_site_followup_urls(candidates, base_url):
     return deduped_urls
 
 
-async def get_site_emails(context, url, profile_url="", site_cache=None):
+async def get_site_emails(context, url, profile_url="", site_cache=None, logger=None):
     """Browse the external site home page and contact/about follow-up pages."""
+
+    def log(message):
+        if logger:
+            logger(message)
+        else:
+            print(message)
+
     normalized_url = normalize_external_url(url)
-    if not normalized_url or "houzz.com" in normalized_url.lower() or normalized_url.startswith("/"):
+    if (
+        not normalized_url
+        or "houzz.com" in normalized_url.lower()
+        or normalized_url.startswith("/")
+    ):
         return set(), False
 
     cache_key = get_domain_cache_key(normalized_url)
@@ -102,21 +131,39 @@ async def get_site_emails(context, url, profile_url="", site_cache=None):
     await Stealth().apply_stealth_async(page)
 
     try:
-        print(f"  [~] Visiting Site: {normalized_url}")
+        log(f"  [~] Visiting Site: {normalized_url}")
         try:
-            await goto_with_retry(page, normalized_url, "site_home", timeout_ms=SITE_TIMEOUT_MS)
-        except Exception as exc:
+            await goto_with_retry(
+                page,
+                normalized_url,
+                "site_home",
+                timeout_ms=SITE_TIMEOUT_MS,
+                logger=logger,
+            )
+        except PlaywrightError as exc:
             had_error = True
             log_failure("site_home", normalized_url, exc, profile_url)
-            print(f"  [!] Site home error ({normalized_url}): {exc}")
+            log(f"  [!] Site home error ({normalized_url}): {exc}")
             return emails, had_error
 
-        await asyncio.sleep(random.uniform(1.5, 2.5))
-        page_emails, page_error = await extract_page_emails(page, normalized_url, "site_home", profile_url)
+        await responsive_sleep(random.uniform(0.4, 0.9))
+        page_emails, page_error = await extract_page_emails(
+            page,
+            normalized_url,
+            "site_home",
+            profile_url,
+            logger=logger,
+        )
         emails.update(page_emails)
         had_error = had_error or page_error
 
-        contact_candidates, link_error = await get_anchor_candidates(page, "site_home", normalized_url, profile_url)
+        contact_candidates, link_error = await get_anchor_candidates(
+            page,
+            "site_home",
+            normalized_url,
+            profile_url,
+            logger=logger,
+        )
         had_error = had_error or link_error
         followup_urls = build_site_followup_urls(contact_candidates, normalized_url)
         visited_urls = {normalized_url.rstrip("/"), page.url.rstrip("/")}
@@ -126,16 +173,28 @@ async def get_site_emails(context, url, profile_url="", site_cache=None):
                 continue
 
             try:
-                await goto_with_retry(page, followup_url, "site_contact", timeout_ms=CONTACT_TIMEOUT_MS)
-                await asyncio.sleep(random.uniform(1.0, 2.0))
-            except Exception as exc:
+                await goto_with_retry(
+                    page,
+                    followup_url,
+                    "site_contact",
+                    timeout_ms=CONTACT_TIMEOUT_MS,
+                    logger=logger,
+                )
+                await responsive_sleep(random.uniform(0.3, 0.7))
+            except PlaywrightError as exc:
                 had_error = True
                 log_failure("site_contact", followup_url, exc, profile_url)
-                print(f"  [!] Contact page error ({followup_url}): {exc}")
+                log(f"  [!] Contact page error ({followup_url}): {exc}")
                 continue
 
             visited_urls.add(page.url.rstrip("/"))
-            contact_emails, contact_error = await extract_page_emails(page, followup_url, "site_contact", profile_url)
+            contact_emails, contact_error = await extract_page_emails(
+                page,
+                followup_url,
+                "site_contact",
+                profile_url,
+                logger=logger,
+            )
             emails.update(contact_emails)
             had_error = had_error or contact_error
     finally:

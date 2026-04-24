@@ -6,6 +6,12 @@ Run the scraper from the project root.
 .\.venv\Scripts\python.exe houzz_pro_scraper.py --url "HOUZZ_SEARCH_URL" --country USA
 ```
 
+Desktop dashboard:
+
+```powershell
+.\.venv\Scripts\python.exe gui_app.py
+```
+
 When no `--source` is passed, the main file asks:
 
 ```text
@@ -54,6 +60,7 @@ Project layout:
 - `houzz_pro_scraper.py` - root main file and CLI.
 - `houzz_emails.csv` - root Houzz master email CSV.
 - `bbb_emails.csv` - root BBB master email CSV.
+- `desktop_app/` - dashboard UI, background services, and data summaries.
 - `scraper/` - all scraper code modules.
 - `scraper/sources/` - Houzz, website, and Facebook scraping workflows.
 - `scraper/sources/bbb_profile.py` - BBB search/profile workflow.

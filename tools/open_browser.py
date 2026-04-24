@@ -1,19 +1,35 @@
+"""Open a persistent browser session for manual site setup.
+
+Run this helper as ``python -m tools.open_browser`` from the project root so
+the ``scraper`` package resolves cleanly in both runtime and static analysis.
+"""
+
 import argparse
 import asyncio
-import sys
-from pathlib import Path
+from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+if __package__ in {None, ""}:
+    raise SystemExit("Run this helper as `python -m tools.open_browser` from the project root.")
 
-from scraper.browser_launcher import launch_persistent_browser
-from scraper.config import USER_DATA_DIR
+from scraper.browser_launcher import (  # pylint: disable=wrong-import-position
+    launch_persistent_browser,
+)
+from scraper.config import USER_DATA_DIR  # pylint: disable=wrong-import-position
 
 
-async def run(url):
+def normalize_helper_url(url: str) -> str:
+    """Validate and normalize the manually opened setup URL."""
+    cleaned = (url or "").strip()
+    parsed = urlparse(cleaned)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Only http/https URLs are allowed for the helper browser.")
+    return cleaned
+
+
+async def run(url: str) -> None:
+    """Open a persistent browser at ``url`` for manual cookie or VPN setup."""
     async with async_playwright() as p:
         print(f"[*] Opening browser with persistent profile in: {USER_DATA_DIR}")
         print("[*] Install/connect your VPN extension, then open BBB.")
@@ -29,12 +45,18 @@ async def run(url):
         print("[*] Browser closed. Session saved.")
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the manual browser helper."""
     parser = argparse.ArgumentParser(description="Open persistent browser for manual setup")
     parser.add_argument("--url", default="https://www.bbb.org/", help="URL to open")
     return parser.parse_args()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Start the asynchronous manual browser helper."""
     args = parse_args()
-    asyncio.run(run(args.url))
+    asyncio.run(run(normalize_helper_url(args.url)))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,7 +1,6 @@
 import re
 from urllib.parse import urlparse
 
-
 FREE_EMAIL_DOMAINS = {
     "gmail.com",
     "yahoo.com",
@@ -54,7 +53,9 @@ def score_email_quality(email, business_name="", website="", sources=None):
     website_root = website_domain.rsplit(".", 2)[0] if website_domain else ""
     name_tokens = tokenize_name(business_name)
 
-    if website_domain and (email_domain == website_domain or email_domain.endswith(f".{website_domain}")):
+    if website_domain and (
+        email_domain == website_domain or email_domain.endswith(f".{website_domain}")
+    ):
         if local_part in GENERIC_LOCAL_PARTS:
             return "high", "business_domain_generic_inbox"
         return "high", "business_domain_personal_inbox"
@@ -62,7 +63,9 @@ def score_email_quality(email, business_name="", website="", sources=None):
     if website_root and website_root in email_domain:
         return "high", "email_domain_matches_website_brand"
 
-    if email_domain not in FREE_EMAIL_DOMAINS and any(token in email_domain for token in name_tokens):
+    if email_domain not in FREE_EMAIL_DOMAINS and any(
+        token in email_domain for token in name_tokens
+    ):
         return "high", "email_domain_matches_business_name"
 
     if email_domain in FREE_EMAIL_DOMAINS:

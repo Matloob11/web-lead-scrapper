@@ -1,0 +1,21 @@
+[MASTER]
+ignore-paths=scratch/.*,\.venv/.*
+
+[MESSAGES CONTROL]
+disable=
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    too-many-return-statements,
+    too-many-ancestors,
+    duplicate-code,
+    too-many-arguments,
+    too-many-positional-arguments,
+    too-many-locals,
+    too-many-branches,
+    too-many-statements,
+    too-many-lines,
+    too-many-instance-attributes
+
+[FORMAT]
+max-line-length=100

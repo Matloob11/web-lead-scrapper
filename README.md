@@ -8,6 +8,12 @@ Python Playwright scraper for collecting contractor and real-estate related emai
 .\.venv\Scripts\python.exe houzz_pro_scraper.py
 ```
 
+Desktop dashboard:
+
+```powershell
+.\.venv\Scripts\python.exe gui_app.py
+```
+
 Or run a source directly:
 
 ```powershell
@@ -25,6 +31,7 @@ Or run a source directly:
 - `output/csv/*_results_detailed.csv` - detailed rows with quality scoring
 - `output/csv/*_scrape_status.csv` - resume/status tracking
 - `final/*_high_quality_emails.csv` - final quality-filtered client-ready emails
+- `desktop_app/` - desktop dashboard app, run services, and UI components
 
 Scraped emails, logs, browser profiles, and virtualenv files are ignored by Git.
 

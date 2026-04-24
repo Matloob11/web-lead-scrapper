@@ -80,20 +80,54 @@ INVALID_EMAIL_TLDS = {
 }
 
 RETRY_ATTEMPTS = 2
-PROFILE_TIMEOUT_MS = 20000
-BBB_SEARCH_TIMEOUT_MS = 25000
-BBB_PROFILE_TIMEOUT_MS = 20000
-REDIRECT_TIMEOUT_MS = 10000
-SITE_TIMEOUT_MS = 15000
-CONTACT_TIMEOUT_MS = 12000
-FACEBOOK_TIMEOUT_MS = 12000
-GOOGLE_TIMEOUT_MS = 15000
+PROFILE_TIMEOUT_MS = 15000
+BBB_SEARCH_TIMEOUT_MS = 18000
+BBB_PROFILE_TIMEOUT_MS = 15000
+REDIRECT_TIMEOUT_MS = 7000
+SITE_TIMEOUT_MS = 10000
+CONTACT_TIMEOUT_MS = 8000
+FACEBOOK_TIMEOUT_MS = 9000
+GOOGLE_TIMEOUT_MS = 10000
 GOOGLE_RESULT_LIMIT = 3
 DEFAULT_SEARCH_COUNTRY = "USA"
+CONCURRENT_PROFILES = 4
+
+USER_AGENTS = [
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    ),
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+    ),
+]
 
 MASTER_HEADERS = ["Email"]
-FINAL_DETAIL_HEADERS = ["Email", "Quality", "Reason", "Name", "Website", "Profile"]
+FINAL_DETAIL_HEADERS = ["Email"]
 STATUS_HEADERS = ["profile_url", "status", "detail", "updated_at"]
+GOOGLE_FALLBACK_STATUS_FILE = str(PROJECT_ROOT / "google_fallback_search_status.csv")
+GOOGLE_FALLBACK_STATUS_HEADERS = [
+    "profile_url",
+    "name",
+    "location",
+    "country",
+    "query",
+    "status",
+    "candidate_count",
+    "first_candidate",
+    "detail",
+    "updated_at",
+]
 DETAIL_HEADERS = [
     "email",
     "name",
@@ -270,4 +304,11 @@ REJECT_EMAIL_DOMAINS = (
     "ca.gov",
     "bbb.org",
     "thinkservice-email.com",
+)
+
+STRICT_REJECT_LOCAL_FRAGMENTS = (
+    "houzz",
+    "bbb",
+    "noreply",
+    "no-reply",
 )

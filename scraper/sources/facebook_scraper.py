@@ -1,17 +1,21 @@
-import asyncio
+"""Facebook page helpers used to extract visible business emails."""
+
 import random
 import re
 from urllib.parse import parse_qs, urlparse
 
-from playwright_stealth import Stealth
+from playwright.async_api import Error as PlaywrightError
+from playwright_stealth import Stealth  # type: ignore[import-untyped]
 
 from scraper.browser_helpers import extract_page_emails, goto_with_retry
 from scraper.config import FACEBOOK_REJECT_FIRST_SEGMENTS, FACEBOOK_TIMEOUT_MS
+from scraper.control import responsive_sleep
 from scraper.storage.csv_storage import log_failure
 from scraper.utils import normalize_external_url
 
 
 def normalize_facebook_candidate_url(url):
+    """Normalize a Facebook URL and reject generic or unsupported paths."""
     normalized_url = normalize_external_url(url)
     if not normalized_url:
         return ""
@@ -44,6 +48,7 @@ def normalize_facebook_candidate_url(url):
 
 
 def build_facebook_about_url(facebook_url):
+    """Return the Facebook About page URL for a normalized profile URL."""
     parsed = urlparse(facebook_url)
     if "/about" in (parsed.path or "").lower():
         return facebook_url
@@ -52,8 +57,15 @@ def build_facebook_about_url(facebook_url):
     return facebook_url.rstrip("/") + "/about"
 
 
-async def get_facebook_emails(context, url, profile_url="", facebook_cache=None):
+async def get_facebook_emails(context, url, profile_url="", facebook_cache=None, logger=None):
     """Visit a Facebook page/about page and pull visible emails."""
+
+    def log(msg):
+        if logger:
+            logger(msg)
+        else:
+            print(msg)
+
     normalized_url = normalize_facebook_candidate_url(url)
     if not normalized_url:
         return set(), False
@@ -70,17 +82,29 @@ async def get_facebook_emails(context, url, profile_url="", facebook_cache=None)
     await Stealth().apply_stealth_async(page)
 
     try:
-        print(f"  [~] Checking Facebook: {about_url}")
+        log(f"  [~] Checking Facebook: {about_url}")
         try:
-            await goto_with_retry(page, about_url, "facebook_about", timeout_ms=FACEBOOK_TIMEOUT_MS)
-        except Exception as exc:
+            await goto_with_retry(
+                page,
+                about_url,
+                "facebook_about",
+                timeout_ms=FACEBOOK_TIMEOUT_MS,
+                logger=logger,
+            )
+        except PlaywrightError as exc:
             had_error = True
             log_failure("facebook_about", about_url, exc, profile_url)
-            print(f"  [!] FB scraping error ({about_url}): {exc}")
+            log(f"  [!] FB scraping error ({about_url}): {exc}")
             return emails, had_error
 
-        await asyncio.sleep(random.uniform(2.0, 3.0))
-        page_emails, page_error = await extract_page_emails(page, about_url, "facebook_about", profile_url)
+        await responsive_sleep(random.uniform(0.8, 1.3))
+        page_emails, page_error = await extract_page_emails(
+            page,
+            about_url,
+            "facebook_about",
+            profile_url,
+            logger=logger,
+        )
         emails.update(page_emails)
         had_error = had_error or page_error
     finally:

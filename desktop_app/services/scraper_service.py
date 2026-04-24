@@ -1,0 +1,228 @@
+"""Background task coordinator for the desktop dashboard."""
+
+import asyncio
+import csv
+import queue
+import threading
+from typing import Any
+
+from playwright.async_api import Error as PlaywrightError
+
+from desktop_app.models import ScraperRunConfig
+from desktop_app.services.file_service import (
+    build_source_summary,
+    open_path,
+    reset_source_outputs,
+)
+from houzz_pro_scraper import export_final_for_source, run_scraper
+from scraper.runtime import ScraperRuntimeController
+
+SCRAPER_TASK_ERRORS = (csv.Error, OSError, PlaywrightError, RuntimeError, ValueError)
+EXPORT_TASK_ERRORS = (csv.Error, OSError, RuntimeError, ValueError)
+
+
+class ScraperDashboardService:
+    """Own background scrape/export jobs and stream events back to the UI."""
+
+    def __init__(self) -> None:
+        self._events: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._runtime: ScraperRuntimeController | None = None
+        self._mode = "idle"
+        self._pending_restart: ScraperRunConfig | None = None
+
+    def _emit(self, event_type, payload=None):
+        self._events.put({"type": event_type, "payload": payload or {}})
+
+    def _emit_log(self, message):
+        self._emit("log", {"message": message})
+
+    def drain_events(self):
+        events = []
+        while True:
+            try:
+                events.append(self._events.get_nowait())
+            except queue.Empty:
+                return events
+
+    def get_state(self):
+        with self._lock:
+            runtime_snapshot = self._runtime.snapshot_dict() if self._runtime else None
+            return {
+                "mode": self._mode,
+                "busy": self._thread is not None,
+                "runtime": runtime_snapshot,
+                "restart_queued": self._pending_restart is not None,
+            }
+
+    def refresh_summary(self, source):
+        summary = build_source_summary(source)
+        self._emit("summary", {"summary": summary.as_dict()})
+        return summary
+
+    def start_run(self, config):
+        with self._lock:
+            if self._thread is not None:
+                return False
+            self._runtime = ScraperRuntimeController(
+                on_log=self._emit_log,
+                on_snapshot=lambda snapshot: self._emit(
+                    "runtime",
+                    {"snapshot": snapshot.as_dict()},
+                ),
+            )
+            self._mode = "scrape"
+            self._thread = threading.Thread(
+                target=self._run_scrape_task,
+                args=(config,),
+                daemon=True,
+            )
+            self._thread.start()
+
+        self._emit("task", {"mode": "scrape", "status": "started"})
+        return True
+
+    def _run_scrape_task(self, config):
+        try:
+            self._emit_log(
+                "[SYSTEM] Run options: "
+                f"browser={'hidden/headless' if config.headless else 'visible'}; "
+                f"facebook={'skip' if config.skip_facebook else 'enabled'}; "
+                f"google_fallback={'skip' if config.skip_google_fallback else 'enabled'}; "
+                f"retry_no_email={'on' if config.retry_no_email else 'off'}; "
+                f"auto_export={'on' if config.auto_export_final else 'off'}"
+            )
+            if config.fresh_start:
+                removed = reset_source_outputs(config.source)
+                if removed:
+                    self._emit_log(
+                        "[SYSTEM] Fresh start enabled. Previous source files were cleared."
+                    )
+                else:
+                    self._emit_log(
+                        "[SYSTEM] Fresh start enabled. No previous source files were found."
+                    )
+                self.refresh_summary(config.source)
+
+            runtime = self._runtime
+            if runtime is None:
+                raise RuntimeError("Scraper runtime was not initialized.")
+
+            asyncio.run(
+                run_scraper(
+                    config.url,
+                    source=config.source,
+                    max_pages=config.max_pages,
+                    max_profiles=config.max_profiles,
+                    headless=config.headless,
+                    skip_facebook=config.skip_facebook,
+                    country=config.country,
+                    skip_google_fallback=config.skip_google_fallback,
+                    auto_export_final=config.auto_export_final,
+                    quality_filter=config.quality_filter,
+                    retry_no_email=config.retry_no_email,
+                    logger=runtime.log,
+                    runtime=runtime,
+                )
+            )
+        except SCRAPER_TASK_ERRORS as exc:
+            self._emit_log(f"[ERROR] {exc}")
+            if self._runtime:
+                self._runtime.complete_run(error_message=str(exc))
+        finally:
+            source = config.source
+            self.refresh_summary(source)
+
+            with self._lock:
+                self._thread = None
+                self._mode = "idle"
+                self._runtime = None
+                pending_restart = self._pending_restart
+                self._pending_restart = None
+
+            self._emit("task", {"mode": "scrape", "status": "finished", "source": source})
+
+            if pending_restart:
+                self._emit_log("[SYSTEM] Restarting scraper with current panel settings...")
+                self.start_run(pending_restart)
+
+    def start_export(self, source, quality_filter):
+        with self._lock:
+            if self._thread is not None:
+                return False
+            self._mode = "export"
+            self._thread = threading.Thread(
+                target=self._run_export_task,
+                args=(source, tuple(quality_filter)),
+                daemon=True,
+            )
+            self._thread.start()
+
+        self._emit("task", {"mode": "export", "status": "started"})
+        return True
+
+    def _run_export_task(self, source, quality_filter):
+        try:
+            export_result = export_final_for_source(
+                source,
+                quality_filter=quality_filter,
+                logger=self._emit_log,
+            )
+            self._emit("export", {"result": export_result, "source": source})
+        except EXPORT_TASK_ERRORS as exc:
+            self._emit_log(f"[ERROR] Export failed: {exc}")
+        finally:
+            self.refresh_summary(source)
+            with self._lock:
+                self._thread = None
+                self._mode = "idle"
+            self._emit("task", {"mode": "export", "status": "finished", "source": source})
+
+    def pause_run(self):
+        with self._lock:
+            runtime = self._runtime
+        if not runtime:
+            return False
+        runtime.request_pause()
+        self._emit_log("[SYSTEM] Pause requested. Active profiles will finish their current step.")
+        return True
+
+    def resume_run(self):
+        with self._lock:
+            runtime = self._runtime
+        if not runtime:
+            return False
+        runtime.request_resume()
+        self._emit_log("[SYSTEM] Resume requested. Scraper scheduling is active again.")
+        return True
+
+    def stop_run(self):
+        with self._lock:
+            runtime = self._runtime
+        if not runtime:
+            return False
+        runtime.request_stop()
+        self._emit_log("[SYSTEM] Stop requested. The scraper will wind down safely.")
+        return True
+
+    def restart_run(self, config):
+        with self._lock:
+            busy = self._thread is not None
+            mode = self._mode
+            if busy and mode != "scrape":
+                return False
+            if busy:
+                self._pending_restart = config
+                runtime = self._runtime
+            else:
+                runtime = None
+
+        if runtime:
+            runtime.request_stop()
+            self._emit_log("[SYSTEM] Restart queued. Current run is being stopped first.")
+            return True
+        return self.start_run(config)
+
+    def open_system_path(self, path):
+        open_path(path)

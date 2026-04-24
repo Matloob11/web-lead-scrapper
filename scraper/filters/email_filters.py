@@ -7,6 +7,7 @@ from scraper.config import (
     PLACEHOLDER_EMAIL_DOMAINS,
     PLACEHOLDER_EMAIL_FRAGMENTS,
     REJECT_EMAIL_DOMAINS,
+    STRICT_REJECT_LOCAL_FRAGMENTS,
 )
 
 
@@ -54,7 +55,9 @@ def is_valid_email_candidate(email):
         return False
     if any(char in domain for char in "/\\?#"):
         return False
-    if domain in REJECT_EMAIL_DOMAINS or any(domain.endswith(f".{reject_domain}") for reject_domain in REJECT_EMAIL_DOMAINS):
+    if domain in REJECT_EMAIL_DOMAINS or any(
+        domain.endswith(f".{reject_domain}") for reject_domain in REJECT_EMAIL_DOMAINS
+    ):
         return False
 
     tld = domain.rsplit(".", 1)[-1]
@@ -63,7 +66,11 @@ def is_valid_email_candidate(email):
     if re.search(r"@\d+x\.", clean_email):
         return False
 
-    domain_labels = domain.split(".")
-    if any(not label or label.startswith("-") or label.endswith("-") for label in domain_labels):
+    # Strict local part filtering (e.g., houzz@..., bbb@...)
+    if any(fragment in local_part for fragment in STRICT_REJECT_LOCAL_FRAGMENTS):
         return False
-    return True
+
+    domain_labels = domain.split(".")
+    return not any(
+        not label or label.startswith("-") or label.endswith("-") for label in domain_labels
+    )

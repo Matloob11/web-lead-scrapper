@@ -1,3 +1,5 @@
+"""Tests for final export filtering and deduplication behavior."""
+
 import csv
 import tempfile
 import unittest
@@ -8,7 +10,10 @@ from scraper.storage import csv_storage
 
 
 class StorageExportTests(unittest.TestCase):
+    """Validate final export generation from the detailed results CSV."""
+
     def test_export_final_emails_filters_quality_and_dedupes(self):
+        """Ensure final exports keep allowed qualities and remove duplicate emails."""
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             detail_file = root / "details.csv"
@@ -72,6 +77,12 @@ class StorageExportTests(unittest.TestCase):
                 csv_storage.ACTIVE_PATHS.update(original_paths)
 
             self.assertEqual(result["count"], 1)
+            self.assertEqual(result["duplicate_count"], 1)
+            self.assertTrue(Path(result["excel_export_file"]).exists())
+            self.assertTrue(Path(result["duplicate_report_file"]).exists())
+            self.assertEqual(result["quality_files"]["high"]["count"], 1)
+            self.assertEqual(result["quality_files"]["low"]["count"], 1)
+
             with final_file.open(newline="", encoding="utf-8") as file_obj:
                 rows = list(csv.reader(file_obj))
             self.assertEqual(rows, [["Email"], ["high@examplebuilder.com"]])
@@ -79,7 +90,17 @@ class StorageExportTests(unittest.TestCase):
             with final_detail_file.open(newline="", encoding="utf-8") as file_obj:
                 detail_rows = list(csv.DictReader(file_obj))
             self.assertEqual(len(detail_rows), 1)
-            self.assertEqual(detail_rows[0]["Quality"], "high")
+            self.assertEqual(detail_rows[0], {"Email": "high@examplebuilder.com"})
+
+            with Path(result["duplicate_report_file"]).open(
+                newline="",
+                encoding="utf-8",
+            ) as file_obj:
+                duplicate_rows = list(csv.DictReader(file_obj))
+            self.assertEqual(
+                duplicate_rows[0],
+                {"Email": "high@examplebuilder.com", "Duplicate Rows": "2"},
+            )
 
 
 if __name__ == "__main__":
