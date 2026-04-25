@@ -87,10 +87,10 @@ def open_path(path):
     os.startfile(path)
 
 
-def reset_source_outputs(source):
+def reset_source_outputs(source, out_filename=None):
     """Delete generated files for one source to prepare a fresh run."""
     clean_source = (source or "houzz").lower()
-    paths = get_source_paths(clean_source)
+    paths = get_source_paths(clean_source, out_filename=out_filename)
     removable_paths = [
         path
         for key, path in paths.items()

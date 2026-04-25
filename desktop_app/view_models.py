@@ -11,9 +11,16 @@ SummarySnapshotDict: TypeAlias = dict[str, Any]
 
 def safe_int(value: str | None) -> int | None:
     """Convert an optional string to an integer when a value is present."""
-    if value is None or value == "":
+    if value is None:
         return None
-    return int(value)
+    clean_value = value.strip()
+    if not clean_value:
+        return None
+    try:
+        parsed_value = int(clean_value)
+    except ValueError:
+        return None
+    return parsed_value if parsed_value > 0 else None
 
 
 def build_progress_note(runtime: RuntimeSnapshotDict) -> str:
@@ -48,3 +55,24 @@ def format_timestamp(value: str) -> str:
     except ValueError:
         return value
     return parsed.strftime("%d %b %Y %I:%M %p")
+
+
+def summary_file_paths(summary: SummarySnapshotDict) -> list[str]:
+    """Return file paths from a summary, accepting current and legacy shapes."""
+    files = summary.get("files", {})
+    path_values: list[str] = []
+    if isinstance(files, dict):
+        path_values = [
+            value
+            for key, value in files.items()
+            if isinstance(key, str)
+            and key != "source"
+            and key.endswith("_file")
+            and isinstance(value, str)
+            and value
+        ]
+    elif isinstance(files, (list, tuple, set)):
+        path_values = [path for path in files if isinstance(path, str) and path]
+    else:
+        return []
+    return path_values

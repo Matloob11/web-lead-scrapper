@@ -21,6 +21,16 @@ SCRAPER_TASK_ERRORS = (csv.Error, OSError, PlaywrightError, RuntimeError, ValueE
 EXPORT_TASK_ERRORS = (csv.Error, OSError, RuntimeError, ValueError)
 
 
+def build_effective_run_options(config: ScraperRunConfig) -> dict[str, Any]:
+    """Return backend scraper options after applying dashboard convenience toggles."""
+    skip_slow_fallbacks = config.fast_mode
+    return {
+        "skip_facebook": config.skip_facebook or skip_slow_fallbacks,
+        "skip_google_fallback": config.skip_google_fallback or skip_slow_fallbacks,
+        "quality_filter": ("high",) if config.email_only else config.quality_filter,
+    }
+
+
 class ScraperDashboardService:
     """Own background scrape/export jobs and stream events back to the UI."""
 
@@ -85,16 +95,20 @@ class ScraperDashboardService:
 
     def _run_scrape_task(self, config):
         try:
+            effective_options = build_effective_run_options(config)
             self._emit_log(
                 "[SYSTEM] Run options: "
                 f"browser={'hidden/headless' if config.headless else 'visible'}; "
-                f"facebook={'skip' if config.skip_facebook else 'enabled'}; "
-                f"google_fallback={'skip' if config.skip_google_fallback else 'enabled'}; "
+                f"facebook={'skip' if effective_options['skip_facebook'] else 'enabled'}; "
+                "google_fallback="
+                f"{'skip' if effective_options['skip_google_fallback'] else 'enabled'}; "
                 f"retry_no_email={'on' if config.retry_no_email else 'off'}; "
+                f"email_only={'on' if config.email_only else 'off'}; "
+                f"speed={'fast' if config.fast_mode else 'normal'}; "
                 f"auto_export={'on' if config.auto_export_final else 'off'}"
             )
             if config.fresh_start:
-                removed = reset_source_outputs(config.source)
+                removed = reset_source_outputs(config.source, out_filename=config.out_filename)
                 if removed:
                     self._emit_log(
                         "[SYSTEM] Fresh start enabled. Previous source files were cleared."
@@ -116,12 +130,13 @@ class ScraperDashboardService:
                     max_pages=config.max_pages,
                     max_profiles=config.max_profiles,
                     headless=config.headless,
-                    skip_facebook=config.skip_facebook,
+                    skip_facebook=effective_options["skip_facebook"],
                     country=config.country,
-                    skip_google_fallback=config.skip_google_fallback,
+                    skip_google_fallback=effective_options["skip_google_fallback"],
                     auto_export_final=config.auto_export_final,
-                    quality_filter=config.quality_filter,
+                    quality_filter=effective_options["quality_filter"],
                     retry_no_email=config.retry_no_email,
+                    out_filename=config.out_filename,
                     logger=runtime.log,
                     runtime=runtime,
                 )

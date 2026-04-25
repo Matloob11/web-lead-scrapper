@@ -12,6 +12,20 @@ from scraper.storage import csv_storage
 class StorageExportTests(unittest.TestCase):
     """Validate final export generation from the detailed results CSV."""
 
+    def test_custom_output_filename_stays_inside_project_root(self):
+        paths = csv_storage.get_source_paths("houzz", r"..\..\outside")
+        output_path = Path(paths["output_file"])
+
+        self.assertEqual(output_path.name, "outside.csv")
+        self.assertEqual(output_path.parent, Path(csv_storage.HOUZZ_OUTPUT_FILE).parent)
+
+    def test_custom_output_filename_replaces_invalid_chars(self):
+        paths = csv_storage.get_source_paths("bbb", "bad:name")
+        self.assertEqual(Path(paths["output_file"]).name, "bad_name.csv")
+
+    def test_export_quality_filter_accepts_single_string(self):
+        self.assertEqual(csv_storage.normalize_quality_filter("HIGH"), {"high"})
+
     def test_export_final_emails_filters_quality_and_dedupes(self):
         """Ensure final exports keep allowed qualities and remove duplicate emails."""
         with tempfile.TemporaryDirectory() as temp_dir:

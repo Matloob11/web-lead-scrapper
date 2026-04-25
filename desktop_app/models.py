@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 class ScraperRunConfig:
     """Settings collected from the dashboard before starting a run."""
 
-    url: str
+    url: str = ""
     source: str = "houzz"
     max_pages: int | None = None
     max_profiles: int | None = None
@@ -19,6 +19,9 @@ class ScraperRunConfig:
     auto_export_final: bool = True
     quality_filter: tuple[str, ...] = ("high", "medium")
     fresh_start: bool = False
+    email_only: bool = False
+    fast_mode: bool = False
+    out_filename: str | None = None
 
     def as_dict(self):
         """Return a plain dictionary form of the config."""

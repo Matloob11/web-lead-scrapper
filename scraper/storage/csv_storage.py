@@ -3,6 +3,7 @@
 import csv
 import os
 from datetime import datetime
+from pathlib import PurePosixPath, PureWindowsPath
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -34,6 +35,7 @@ from scraper.filters.email_quality import score_email_quality
 QUALITY_LEVELS = ("high", "medium", "low")
 QUALITY_RANK = {"high": 3, "medium": 2, "low": 1}
 DUPLICATE_REPORT_HEADERS = ["Email", "Duplicate Rows"]
+INVALID_FILENAME_CHARS = '<>:"/\\|?*'
 
 ACTIVE_PATHS = {
     "source": "houzz",
@@ -65,10 +67,28 @@ def get_extra_export_paths(source):
     return paths
 
 
-def get_source_paths(source="houzz"):
-    """Return the generated file paths for the requested source."""
-    clean_source = (source or "houzz").lower()
-    if clean_source == "bbb":
+def _clean_output_filename(out_filename):
+    """Return a safe CSV filename, discarding any user-provided directories."""
+    raw_filename = str(out_filename or "").strip()
+    if not raw_filename:
+        return None
+
+    filename = PureWindowsPath(PurePosixPath(raw_filename).name).name
+    filename = "".join(
+        "_" if char in INVALID_FILENAME_CHARS or ord(char) < 32 else char
+        for char in filename
+    ).strip(" .")
+    if not filename:
+        return None
+    if not filename.lower().endswith(".csv"):
+        filename = f"{filename}.csv"
+    return filename
+
+
+def get_source_paths(source="houzz", out_filename=None):
+    """Return the filesystem paths for all scraper output types for a source."""
+    clean_out_filename = _clean_output_filename(out_filename)
+    if source == "bbb":
         paths = {
             "source": "bbb",
             "output_file": BBB_OUTPUT_FILE,
@@ -78,6 +98,11 @@ def get_source_paths(source="houzz"):
             "final_output_file": BBB_FINAL_OUTPUT_FILE,
             "final_detail_file": BBB_FINAL_DETAIL_FILE,
         }
+        if clean_out_filename:
+            paths["output_file"] = os.path.join(
+                os.path.dirname(BBB_OUTPUT_FILE),
+                clean_out_filename,
+            )
         paths.update(get_extra_export_paths("bbb"))
         return paths
 
@@ -90,13 +115,18 @@ def get_source_paths(source="houzz"):
         "final_output_file": HOUZZ_FINAL_OUTPUT_FILE,
         "final_detail_file": HOUZZ_FINAL_DETAIL_FILE,
     }
+    if clean_out_filename:
+        paths["output_file"] = os.path.join(
+            os.path.dirname(HOUZZ_OUTPUT_FILE),
+            clean_out_filename,
+        )
     paths.update(get_extra_export_paths("houzz"))
     return paths
 
 
-def set_active_source(source="houzz"):
+def set_active_source(source="houzz", out_filename=None):
     """Set the source whose output files should be treated as active."""
-    ACTIVE_PATHS.update(get_source_paths(source))
+    ACTIVE_PATHS.update(get_source_paths(source, out_filename=out_filename))
     return dict(ACTIVE_PATHS)
 
 
@@ -232,7 +262,7 @@ def _sheet_xml(rows):
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        f'<sheetData>{"".join(row_xml)}</sheetData></worksheet>'
+        f"<sheetData>{''.join(row_xml)}</sheetData></worksheet>"
     )
 
 
@@ -249,9 +279,7 @@ def _write_xlsx(path, sheets):
 
     for index, sheet_name in enumerate(sheet_names, start=1):
         safe_name = escape(sheet_name, {'"': "&quot;"})
-        sheet_entries.append(
-            f'<sheet name="{safe_name}" sheetId="{index}" r:id="rId{index}"/>'
-        )
+        sheet_entries.append(f'<sheet name="{safe_name}" sheetId="{index}" r:id="rId{index}"/>')
         relationship_entries.append(
             f'<Relationship Id="rId{index}" '
             'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
@@ -259,7 +287,8 @@ def _write_xlsx(path, sheets):
         )
         workbook_overrides.append(
             f'<Override PartName="/xl/worksheets/sheet{index}.xml" '
-            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            'ContentType="application/vnd.openxmlformats-officedocument.'
+            'spreadsheetml.worksheet+xml"/>'
         )
 
     content_types = (
@@ -268,7 +297,7 @@ def _write_xlsx(path, sheets):
         '<Default Extension="rels" '
         'ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
         '<Default Extension="xml" ContentType="application/xml"/>'
-        f'{"".join(workbook_overrides)}</Types>'
+        f"{''.join(workbook_overrides)}</Types>"
     )
     root_rels = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -281,12 +310,12 @@ def _write_xlsx(path, sheets):
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        f'<sheets>{"".join(sheet_entries)}</sheets></workbook>'
+        f"<sheets>{''.join(sheet_entries)}</sheets></workbook>"
     )
     workbook_rels = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        f'{"".join(relationship_entries)}</Relationships>'
+        f"{''.join(relationship_entries)}</Relationships>"
     )
 
     with ZipFile(path, "w", compression=ZIP_DEFLATED) as workbook:
@@ -591,6 +620,20 @@ def _build_duplicate_rows(rows):
     return duplicate_rows
 
 
+def normalize_quality_filter(allowed_qualities):
+    """Normalize optional export quality filters to known lowercase levels."""
+    if allowed_qualities is None:
+        return {"high", "medium"}
+    raw_qualities = [allowed_qualities] if isinstance(allowed_qualities, str) else allowed_qualities
+
+    qualities = {
+        str(quality).strip().lower()
+        for quality in raw_qualities
+        if str(quality).strip().lower() in QUALITY_LEVELS
+    }
+    return qualities or {"high", "medium"}
+
+
 def _write_duplicate_report(path, duplicate_rows):
     """Write duplicate email report rows."""
     ensure_parent_dir(path)
@@ -607,7 +650,7 @@ def _rows_for_xlsx(headers, dict_rows):
 
 def export_final_emails(allowed_qualities=None):
     """Create final CSV, Excel, duplicate, and quality-split exports."""
-    allowed_qualities = set(allowed_qualities or ("high", "medium"))
+    allowed_qualities = normalize_quality_filter(allowed_qualities)
     detail_output_file = get_active_detail_output_file()
     final_output_file = get_active_final_output_file()
     final_detail_file = get_active_final_detail_file()
@@ -639,9 +682,7 @@ def export_final_emails(allowed_qualities=None):
         }
         xlsx_sheets.append((quality.title(), _rows_for_xlsx(FINAL_DETAIL_HEADERS, quality_rows)))
 
-    xlsx_sheets.append(
-        ("Duplicates", _rows_for_xlsx(DUPLICATE_REPORT_HEADERS, duplicate_rows))
-    )
+    xlsx_sheets.append(("Duplicates", _rows_for_xlsx(DUPLICATE_REPORT_HEADERS, duplicate_rows)))
     _write_xlsx(excel_export_file, xlsx_sheets)
 
     return {

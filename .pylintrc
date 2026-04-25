@@ -1,5 +1,6 @@
 [MASTER]
 ignore-paths=scratch/.*,\.venv/.*
+extension-pkg-allow-list=PySide6
 
 [MESSAGES CONTROL]
 disable=
@@ -15,7 +16,10 @@ disable=
     too-many-branches,
     too-many-statements,
     too-many-lines,
-    too-many-instance-attributes
+    too-many-instance-attributes,
+    no-name-in-module,
+    too-few-public-methods,
+    no-member
 
 [FORMAT]
 max-line-length=100

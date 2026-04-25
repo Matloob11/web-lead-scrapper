@@ -115,6 +115,7 @@ async def get_site_emails(context, url, profile_url="", site_cache=None, logger=
     normalized_url = normalize_external_url(url)
     if (
         not normalized_url
+        or not normalized_url.startswith(("http://", "https://"))
         or "houzz.com" in normalized_url.lower()
         or normalized_url.startswith("/")
     ):

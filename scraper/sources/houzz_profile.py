@@ -42,7 +42,7 @@ def score_website_candidate(link):
     label = f"{link.get('text', '')} {link.get('aria', '')}".strip().lower()
     href_lower = href.lower()
 
-    if not href or href_lower.startswith("mailto:"):
+    if not href or href_lower.startswith(("mailto:", "tel:", "javascript:", "#")):
         return -1
     if any(
         domain in href_lower
@@ -70,7 +70,7 @@ def score_facebook_candidate(link):
     label = f"{link.get('text', '')} {link.get('aria', '')}".strip().lower()
     href_lower = href.lower()
 
-    if not href or href_lower.startswith("mailto:"):
+    if not href or href_lower.startswith(("mailto:", "tel:", "javascript:", "#")):
         return -1
     if "facebook.com" in href_lower and not normalize_facebook_candidate_url(href):
         return -1

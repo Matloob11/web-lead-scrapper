@@ -7,7 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from desktop_app.services.file_service import build_source_summary
+from desktop_app.models import ScraperRunConfig
+from desktop_app.services.file_service import build_source_summary, reset_source_outputs
+from desktop_app.services.scraper_service import build_effective_run_options
+from desktop_app.view_models import safe_int, summary_file_paths
 from scraper.browser_launcher import build_launch_options
 from scraper.control import responsive_sleep
 from scraper.runtime import ScraperRuntimeController
@@ -137,6 +140,59 @@ class DesktopServiceTests(unittest.TestCase):
             self.assertEqual(summary.medium_quality_count, 1)
             self.assertEqual(summary.low_quality_count, 1)
             self.assertEqual(summary.last_updated, "2026-04-24T09:03:00")
+
+    def test_reset_source_outputs_uses_custom_output_filename(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            custom_file = root / "custom.csv"
+            status_file = root / "status.csv"
+            custom_file.write_text("Email\nold@example.com\n", encoding="utf-8")
+            status_file.write_text("profile_url,status,detail,updated_at\n", encoding="utf-8")
+            fake_paths = {
+                "source": "houzz",
+                "output_file": str(custom_file),
+                "status_file": str(status_file),
+            }
+
+            with (
+                patch("desktop_app.services.file_service.PROJECT_ROOT", root),
+                patch(
+                    "desktop_app.services.file_service.get_source_paths",
+                    return_value=fake_paths,
+                ) as get_source_paths,
+            ):
+                removed = reset_source_outputs("houzz", out_filename="custom.csv")
+
+            get_source_paths.assert_called_once_with("houzz", out_filename="custom.csv")
+            self.assertEqual({Path(path).name for path in removed}, {"custom.csv", "status.csv"})
+            self.assertFalse(custom_file.exists())
+            self.assertFalse(status_file.exists())
+
+    def test_summary_file_paths_accepts_summary_file_dict(self):
+        files = summary_file_paths(
+            {
+                "files": {
+                    "source": "houzz",
+                    "output_file": r"C:\project\houzz_emails.csv",
+                    "status_file": "",
+                }
+            }
+        )
+
+        self.assertEqual(files, [r"C:\project\houzz_emails.csv"])
+
+    def test_safe_int_ignores_invalid_optional_limits(self):
+        self.assertEqual(safe_int(" 5 "), 5)
+        self.assertIsNone(safe_int(""))
+        self.assertIsNone(safe_int("abc"))
+        self.assertIsNone(safe_int("-2"))
+
+    def test_dashboard_toggles_apply_effective_run_options(self):
+        options = build_effective_run_options(ScraperRunConfig(email_only=True, fast_mode=True))
+
+        self.assertTrue(options["skip_facebook"])
+        self.assertTrue(options["skip_google_fallback"])
+        self.assertEqual(options["quality_filter"], ("high",))
 
     def test_runtime_controller_tracks_progress_and_completion(self):
         runtime = ScraperRuntimeController()

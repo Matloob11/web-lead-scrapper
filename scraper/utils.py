@@ -80,7 +80,7 @@ def decode_houzz_trk_link(url):
         if not parts:
             return ""
 
-        encoded_segment = parts[0]
+        encoded_segment = unquote(parts[0])
         # Quick check: if it's already a plain URL or handle, return it (unlikely but safe)
         if encoded_segment.startswith("http") or encoded_segment.startswith("@"):
             return encoded_segment
@@ -91,7 +91,11 @@ def decode_houzz_trk_link(url):
             encoded_segment += "=" * (4 - missing_padding)
 
         try:
-            decoded = base64.b64decode(encoded_segment).decode("utf-8", errors="ignore").strip()
+            decoded = (
+                base64.urlsafe_b64decode(encoded_segment)
+                .decode("utf-8", errors="ignore")
+                .strip()
+            )
         except (BinasciiError, UnicodeDecodeError, ValueError):
             return ""
 

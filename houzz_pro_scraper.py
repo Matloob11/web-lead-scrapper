@@ -73,6 +73,7 @@ async def run_scraper(
     auto_export_final=True,
     quality_filter=None,
     retry_no_email=False,
+    out_filename=None,
     logger=print,
     stop_event=None,
     runtime=None,
@@ -81,7 +82,7 @@ async def run_scraper(
 
     async with async_playwright() as p:
         source = normalize_source(source)
-        set_active_source(source)
+        set_active_source(source, out_filename=out_filename)
         search_country = compact_whitespace(country) or infer_country_from_url(input_url)
         if runtime:
             runtime.start_run(
@@ -213,10 +214,10 @@ async def run_scraper(
                     await context.close()
 
 
-def export_final_for_source(source, quality_filter=None, logger=print):
+def export_final_for_source(source, quality_filter=None, out_filename=None, logger=print):
     """Export final quality-filtered emails for a source without scraping."""
     source = normalize_source(source)
-    set_active_source(source)
+    set_active_source(source, out_filename=out_filename)
     ensure_output_files()
     export_result = export_final_emails(quality_filter)
     logger(f"[DONE] Exported {export_result['count']} {source.upper()} emails")
@@ -446,6 +447,10 @@ def parse_args():
         help="Do not export final quality-filtered email CSV after scraping",
     )
     parser.add_argument(
+        "--out-filename",
+        help="Custom name for the output CSV file (e.g. leads_today.csv)",
+    )
+    parser.add_argument(
         "--export-final-only",
         action="store_true",
         help="Export final quality-filtered email CSV without scraping",
@@ -484,6 +489,7 @@ def main() -> None:
                 auto_export_final=not args.no_final_export,
                 quality_filter=args.quality_filter,
                 retry_no_email=args.retry_no_email,
+                out_filename=args.out_filename,
             )
         )
     else:
