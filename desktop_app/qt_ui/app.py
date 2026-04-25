@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
