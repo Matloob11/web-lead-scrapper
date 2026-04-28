@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -46,7 +45,7 @@ from desktop_app.view_models import (
     safe_int,
     summary_file_paths,
 )
-from scraper.config import PROJECT_ROOT
+from scraper.config import PROJECT_ROOT, RUNTIME_DIR
 
 MAX_WIDGET_SIZE = 16777215
 SHELL_STACK_BREAKPOINT = 940
@@ -131,10 +130,6 @@ class QtDashboardWindow(QMainWindow):
         self.billing_page = self._build_billing_page()
         self.content_stack.addWidget(self.billing_page)
 
-        # Page 3: Admin
-        self.admin_page = self._build_admin_page()
-        self.content_stack.addWidget(self.admin_page)
-
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
@@ -181,6 +176,10 @@ class QtDashboardWindow(QMainWindow):
         config_label = QLabel("CONFIGURATION")
         config_label.setObjectName("Muted")
         layout.addWidget(config_label)
+
+        layout.addWidget(QLabel("License Key:"))
+        self.license_key_input = self._line_edit("Required")
+        layout.addWidget(self.license_key_input)
 
         layout.addWidget(QLabel("Target Pages:"))
         self.max_pages_input = self._line_edit("Optional")
@@ -310,7 +309,7 @@ class QtDashboardWindow(QMainWindow):
 
         self.billing_card_container = QWidget()
         self.billing_grid = QGridLayout(self.billing_card_container)
-        
+
         self.bill_emails_card = MetricCard("Total Emails", "#34b978")
         self.bill_pkr_card = MetricCard("Bill (PKR)", "#d7a13f")
         self.bill_usd_card = MetricCard("Bill (USD)", "#6aa6ff")
@@ -320,10 +319,10 @@ class QtDashboardWindow(QMainWindow):
         self.billing_grid.addWidget(self.bill_pkr_card, 0, 1)
         self.billing_grid.addWidget(self.bill_usd_card, 1, 0)
         self.billing_grid.addWidget(self.bill_sessions_card, 1, 1)
-        
+
         self.billing_card_container.setMinimumHeight(160)
         layout.addWidget(self.billing_card_container)
-        
+
         details = QLabel("Note: Billing is calculated at 0.5 PKR per email fetched.")
         details.setObjectName("Muted")
         layout.addWidget(details)
@@ -470,8 +469,44 @@ class QtDashboardWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._on_stop_click)
 
+        self.pause_btn = QPushButton("  Pause")
+        self.pause_btn.setObjectName("WarningButton")
+        self.pause_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
+        self.pause_btn.setIconSize(QSize(14, 14))
+        self.pause_btn.setFixedHeight(44)
+        self.pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.clicked.connect(self._on_pause_click)
+
+        self.resume_btn = QPushButton("  Resume")
+        self.resume_btn.setObjectName("PrimaryButton")
+        self.resume_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.resume_btn.setIconSize(QSize(14, 14))
+        self.resume_btn.setFixedHeight(44)
+        self.resume_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.resume_btn.setEnabled(False)
+        self.resume_btn.clicked.connect(self._on_resume_click)
+
+        self.restart_btn = QPushButton("  Restart")
+        self.restart_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.restart_btn.setIconSize(QSize(14, 14))
+        self.restart_btn.setFixedHeight(44)
+        self.restart_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.restart_btn.clicked.connect(self._on_restart_click)
+
+        self.export_btn = QPushButton("  Export")
+        self.export_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon))
+        self.export_btn.setIconSize(QSize(14, 14))
+        self.export_btn.setFixedHeight(44)
+        self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_btn.clicked.connect(self._on_export_click)
+
         btn_layout.addWidget(self.start_btn, 2)
         btn_layout.addWidget(self.stop_btn, 1)
+        btn_layout.addWidget(self.pause_btn, 1)
+        btn_layout.addWidget(self.resume_btn, 1)
+        btn_layout.addWidget(self.restart_btn, 1)
+        btn_layout.addWidget(self.export_btn, 1)
         layout.addLayout(btn_layout)
 
     def _setup_refresh_timer(self) -> None:
@@ -495,17 +530,14 @@ class QtDashboardWindow(QMainWindow):
         self._update_billing_ui()
 
     def _update_billing_ui(self) -> None:
-        bill = self.service.get_billing_info()
+        bill = self.service.get_billing_info(self.current_license_key())
         self.sidebar_billing_label.setText(f"Est. Bill: {bill['pkr']:.2f} PKR")
-        
+
         if self.content_stack.currentIndex() == 2:  # Billing page
-            self.bill_emails_card.set_metric(bill['emails'])
+            self.bill_emails_card.set_metric(bill["emails"])
             self.bill_pkr_card.set_metric(f"{bill['pkr']:.2f}")
             self.bill_usd_card.set_metric(f"${bill['usd']:.2f}")
-            self.bill_sessions_card.set_metric(bill['sessions'])
-        
-        if self.content_stack.currentIndex() == 3:  # Admin page
-            self._refresh_admin_stats()
+            self.bill_sessions_card.set_metric(bill["sessions"])
 
     def _drain_service_events(self) -> None:
         for event in self.service.drain_events():
@@ -530,18 +562,25 @@ class QtDashboardWindow(QMainWindow):
 
         self.run_progress_note.setText(build_progress_note(runtime))
 
-        success_rate = runtime.get("success_rate", 0.0)
-        if success_rate > 0:
+        checked = int(runtime.get("checked_total", 0) or 0)
+        processed = int(runtime.get("processed", 0) or 0)
+        saved = int(runtime.get("master_saved", 0) or 0)
+        if checked:
             self.success_rate_note.setText(
-                f"Extracting at {round(success_rate * 100)}% efficiency. "
-                f"{runtime.get('emails_total', 0)} leads found so far."
+                f"{processed} profiles processed, {saved} new emails saved."
             )
+        else:
+            self.success_rate_note.setText("Extraction started. Waiting for first profile result.")
 
     def _apply_summary(self, summary: SummarySnapshotDict) -> None:
         # Update values
+        active_profiles = 0
+        if self.runtime_snapshot:
+            active_profiles = int(self.runtime_snapshot.get("active_profiles", 0) or 0)
+
         mapping = {
             "checked": summary.get("tracked_profiles", 0),
-            "active": summary.get("active", 0),
+            "active": active_profiles,
             "processed": summary.get("processed_count", 0),
             "no_email": summary.get("no_email_count", 0),
             "failed": summary.get("failed_count", 0),
@@ -565,7 +604,7 @@ class QtDashboardWindow(QMainWindow):
             f"VERIFIED EMAILS: {summary.get('processed_count', 0)}",
             f"MISSING DATA: {summary.get('no_email_count', 0)}",
             f"FAILURE COUNT: {summary.get('failed_count', 0)}",
-            f"ACTIVE RUNS: {summary.get('active', 0)}",
+            f"ACTIVE PROFILES: {active_profiles}",
             "-" * 40,
             "FILES FOUND:",
         ]
@@ -580,19 +619,29 @@ class QtDashboardWindow(QMainWindow):
 
     def _update_status(self, state: dict[str, Any]) -> None:
         is_busy = state.get("busy", False)
+        mode = state.get("mode", "idle")
+        run_state = ""
+        if self.runtime_snapshot:
+            run_state = str(self.runtime_snapshot.get("run_state", ""))
+
         if is_busy:
-            self.status_dot.setText("●  Extracting...")
+            status_label = "Paused" if run_state == "paused" else "Extracting..."
+            self.status_dot.setText(f"●  {status_label}")
             self.status_dot.setObjectName("StatusBusy")
-            self.start_btn.setEnabled(False)
-            self.stop_btn.setEnabled(True)
         else:
             self.status_dot.setText("●  Idle")
             self.status_dot.setObjectName("StatusIdle")
-            self.start_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
+
+        is_scrape = is_busy and mode == "scrape"
+        self.start_btn.setEnabled(not is_busy)
+        self.stop_btn.setEnabled(is_scrape)
+        self.pause_btn.setEnabled(is_scrape and run_state == "running")
+        self.resume_btn.setEnabled(is_scrape and run_state == "paused")
+        self.restart_btn.setEnabled(mode != "export")
+        self.export_btn.setEnabled(not is_busy)
         self.status_dot.setStyle(self.status_dot.style())
 
-    def _on_start_click(self) -> None:
+    def _current_output_filename(self) -> str:
         out_filename = self.output_filename_input.currentText().strip()
         if out_filename == "Custom":
             out_filename = self.custom_filename_input.text().strip()
@@ -601,10 +650,13 @@ class QtDashboardWindow(QMainWindow):
                 out_filename = f"{self.current_source().lower()}_custom_{timestamp}.csv"
             elif not out_filename.lower().endswith(".csv"):
                 out_filename += ".csv"
+        return out_filename
 
-        config = ScraperRunConfig(
+    def _build_run_config(self) -> ScraperRunConfig:
+        return ScraperRunConfig(
             url=self.target_url_input.text().strip(),
             source=self.current_source(),
+            license_key=self.current_license_key(),
             max_pages=safe_int(self.max_pages_input.text()),
             max_profiles=safe_int(self.max_profiles_input.text()),
             headless=self.headless_check.isChecked(),
@@ -614,14 +666,74 @@ class QtDashboardWindow(QMainWindow):
             skip_google_fallback=self.skip_google_check.isChecked(),
             retry_no_email=self.retry_no_email_check.isChecked(),
             fresh_start=self.fresh_start_check.isChecked(),
-            out_filename=out_filename,
+            out_filename=self._current_output_filename(),
         )
+
+    def _on_start_click(self) -> None:
+        config = self._build_run_config()
+        if not config.license_key:
+            QMessageBox.information(
+                self,
+                "Missing License",
+                "Please enter your license key before starting.",
+            )
+            return
+        if not config.url:
+            QMessageBox.information(self, "Missing URL", "Please enter a target search URL.")
+            return
+
+        self._save_license_key(config.license_key)
         if self.service.start_run(config):
             self.summary_snapshot = {}  # Reset to force refresh
             self.log_console.clear()
+        else:
+            state = self.service.get_state()
+            if not state.get("busy"):
+                QMessageBox.warning(
+                    self,
+                    "Could Not Start",
+                    "Access may be pending, blocked, or DB may be unreachable. "
+                    "Check the activity feed.",
+                )
 
     def _on_stop_click(self) -> None:
         self.service.stop_run()
+
+    def _on_pause_click(self) -> None:
+        self.service.pause_run()
+
+    def _on_resume_click(self) -> None:
+        self.service.resume_run()
+
+    def _on_restart_click(self) -> None:
+        config = self._build_run_config()
+        if not config.url:
+            QMessageBox.information(self, "Missing URL", "Please enter a target search URL.")
+            return
+        if not self.service.restart_run(config):
+            QMessageBox.warning(
+                self,
+                "Could Not Restart",
+                "Restart is only available for scraping.",
+            )
+
+    def _on_export_click(self) -> None:
+        license_key = self.current_license_key()
+        if not license_key:
+            QMessageBox.information(
+                self,
+                "Missing License",
+                "Please enter your license key before exporting.",
+            )
+            return
+        self._save_license_key(license_key)
+        quality_filter = ("high",) if self.email_only_check.isChecked() else ("high", "medium")
+        if not self.service.start_export(self.current_source(), quality_filter, license_key):
+            QMessageBox.warning(
+                self,
+                "Export Blocked",
+                "Access may be pending, blocked, or DB may be unreachable.",
+            )
 
     def _on_open_directory(self) -> None:
         summary: SummarySnapshotDict = self.summary_snapshot or {}
@@ -646,6 +758,30 @@ class QtDashboardWindow(QMainWindow):
     def current_source(self) -> str:
         """Return the currently selected scraper source."""
         return "bbb" if self.source_combo.currentText().lower() == "bbb" else "houzz"
+
+    def current_license_key(self) -> str:
+        """Return the normalized license key from the user dashboard."""
+        return self.license_key_input.text().strip().upper()
+
+    def _license_key_file(self) -> Path:
+        return Path(RUNTIME_DIR) / "license_key.txt"
+
+    def _load_license_key(self) -> str:
+        path = self._license_key_file()
+        try:
+            if path.exists():
+                return path.read_text(encoding="utf-8").strip().upper()
+        except OSError:
+            return ""
+        return ""
+
+    def _save_license_key(self, license_key: str) -> None:
+        path = self._license_key_file()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(license_key.strip().upper(), encoding="utf-8")
+        except OSError as exc:
+            self._append_log(f"[WARN] Could not save license key: {exc}")
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -689,7 +825,11 @@ class QtDashboardWindow(QMainWindow):
         self._current_cols = columns
 
     def _seed_defaults(self) -> None:
-        pass
+        saved_license = self._load_license_key()
+        if saved_license:
+            self.license_key_input.setText(saved_license)
+        self.log_console.clear()
+        self.summary_snapshot = build_source_summary(self.current_source()).as_dict()
 
     def _append_log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")

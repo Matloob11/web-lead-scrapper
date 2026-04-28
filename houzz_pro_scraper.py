@@ -184,8 +184,7 @@ async def run_scraper(
                 logger(f"[DONE] Final detail exported to {export_result['final_detail_file']}")
                 logger(f"[DONE] Excel export written to {export_result['excel_export_file']}")
                 logger(
-                    f"[DONE] Duplicate report written to "
-                    f"{export_result['duplicate_report_file']}"
+                    f"[DONE] Duplicate report written to {export_result['duplicate_report_file']}"
                 )
             print_summary(stats, logger=logger)
             logger(f"\n[DONE] Master data saved to {output_file}")
@@ -308,10 +307,6 @@ async def run_houzz_search(
 
                 # Signal service to update DB
                 if hasattr(runtime, "service") and runtime.service:
-                    runtime.service.record_profile_result(pro_link, result)
-                
-                # Signal service to update DB
-                if hasattr(runtime, 'service') and runtime.service:
                     runtime.service.record_profile_result(pro_link, result)
 
         await goto_with_retry(
