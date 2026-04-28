@@ -11,3 +11,5 @@ output/logs/*.csv
 output/csv/scraped_links.txt
 output/backup/
 final/*.csv
+final/*.xlsx
+runtime/license_key.txt

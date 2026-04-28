@@ -5,11 +5,14 @@ import csv
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from desktop_app.models import ScraperRunConfig
 from desktop_app.services.file_service import build_source_summary, reset_source_outputs
-from desktop_app.services.scraper_service import build_effective_run_options
+from desktop_app.services.scraper_service import (
+    ScraperDashboardService,
+    build_effective_run_options,
+)
 from desktop_app.view_models import safe_int, summary_file_paths
 from scraper.browser_launcher import build_launch_options
 from scraper.control import responsive_sleep
@@ -193,6 +196,57 @@ class DesktopServiceTests(unittest.TestCase):
         self.assertTrue(options["skip_facebook"])
         self.assertTrue(options["skip_google_fallback"])
         self.assertEqual(options["quality_filter"], ("high",))
+
+    def test_dashboard_service_uses_auto_device_id_without_user_license(self):
+        service = ScraperDashboardService()
+        fake_thread = MagicMock()
+
+        with (
+            patch(
+                "desktop_app.services.scraper_service.get_device_id",
+                return_value="DEVICE-TEST",
+            ),
+            patch(
+                "desktop_app.services.scraper_service.db_manager.request_access",
+                return_value={
+                    "allowed": True,
+                    "status": "approved",
+                    "message": "Access approved.",
+                },
+            ) as request_access,
+            patch(
+                "desktop_app.services.scraper_service.db_manager.track_start",
+                return_value=None,
+            ) as track_start,
+            patch(
+                "desktop_app.services.scraper_service.db_manager.connect",
+                return_value=True,
+            ),
+            patch(
+                "desktop_app.services.scraper_service.threading.Thread",
+                return_value=fake_thread,
+            ),
+        ):
+            started = service.start_run(
+                ScraperRunConfig(
+                    url="https://www.houzz.com/professionals",
+                    source="houzz",
+                    access_identity="",
+                )
+            )
+
+        self.assertTrue(started)
+        request_access.assert_called_once_with(
+            "DEVICE-TEST",
+            "houzz",
+            "https://www.houzz.com/professionals",
+        )
+        track_start.assert_called_once_with(
+            "houzz",
+            "https://www.houzz.com/professionals",
+            license_key="DEVICE-TEST",
+        )
+        fake_thread.start.assert_called_once()
 
     def test_runtime_controller_tracks_progress_and_completion(self):
         runtime = ScraperRuntimeController()

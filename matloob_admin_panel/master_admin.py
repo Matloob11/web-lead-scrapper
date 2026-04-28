@@ -32,6 +32,7 @@ mongo_module = importlib.import_module("scraper.storage.mongodb_storage")
 db_manager = mongo_module.db_manager
 ACCESS_APPROVED = mongo_module.ACCESS_APPROVED
 ACCESS_BLOCKED = mongo_module.ACCESS_BLOCKED
+ACCESS_PENDING = mongo_module.ACCESS_PENDING
 
 
 class AdminBillingApp(QMainWindow):
@@ -39,7 +40,7 @@ class AdminBillingApp(QMainWindow):
 
     COLUMNS = (
         "Computer",
-        "License",
+        "Device ID",
         "Status",
         "Emails",
         "Bill PKR",
@@ -89,6 +90,7 @@ class AdminBillingApp(QMainWindow):
             QPushButton:hover { background-color: #2563eb; }
             QPushButton#ApproveButton { background-color: #10b981; }
             QPushButton#BlockButton { background-color: #ef4444; }
+            QPushButton#PendingButton { background-color: #f59e0b; }
             QPushButton#ResumeButton { background-color: #22c55e; }
             """
         )
@@ -103,7 +105,9 @@ class AdminBillingApp(QMainWindow):
         title.setObjectName("Title")
         layout.addWidget(title)
 
-        self.notice_label = QLabel("Pending users appear first. Refresh checks MongoDB.")
+        self.notice_label = QLabel(
+            "Only approved users can scrape or export. Pending users appear first."
+        )
         self.notice_label.setObjectName("Muted")
         layout.addWidget(self.notice_label)
 
@@ -170,7 +174,9 @@ class AdminBillingApp(QMainWindow):
 
             self.table.setCellWidget(row_index, 7, self._build_action_widget(row))
 
-        self.notice_label.setText("Pending users appear first. Refresh checks MongoDB.")
+        self.notice_label.setText(
+            "Only approved users can scrape or export. Pending users appear first."
+        )
         self.summary_label.setText(
             f"Users: {len(self._rows)} | Pending: {pending_count} | "
             f"Blocked: {blocked_count} | Total bill: {total_bill:.2f} PKR"
@@ -192,6 +198,11 @@ class AdminBillingApp(QMainWindow):
         block_btn.clicked.connect(partial(self._set_status, row, ACCESS_BLOCKED))
         layout.addWidget(block_btn)
 
+        pending_btn = QPushButton("Pending")
+        pending_btn.setObjectName("PendingButton")
+        pending_btn.clicked.connect(partial(self._set_status, row, ACCESS_PENDING))
+        layout.addWidget(pending_btn)
+
         resume_btn = QPushButton("Resume")
         resume_btn.setObjectName("ResumeButton")
         resume_btn.clicked.connect(partial(self._set_status, row, ACCESS_APPROVED))
@@ -204,7 +215,7 @@ class AdminBillingApp(QMainWindow):
         computer_name = str(row.get("computer_name") or row.get("_id") or "").strip()
         license_key = str(row.get("license_key") or "").strip()
         if not computer_name or not license_key:
-            QMessageBox.warning(self, "Missing User", "Computer name or license key is missing.")
+            QMessageBox.warning(self, "Missing User", "Computer name or device ID is missing.")
             return
 
         if db_manager.set_user_access_status(computer_name, license_key, status):

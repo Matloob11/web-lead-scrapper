@@ -9,7 +9,7 @@ class ScraperRunConfig:
 
     url: str = ""
     source: str = "houzz"
-    license_key: str = ""
+    access_identity: str = ""
     max_pages: int | None = None
     max_profiles: int | None = None
     headless: bool = False

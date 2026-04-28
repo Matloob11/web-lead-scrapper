@@ -15,6 +15,7 @@ from desktop_app.services.file_service import (
     reset_source_outputs,
 )
 from houzz_pro_scraper import export_final_for_source, run_scraper
+from scraper.identity import get_device_id
 from scraper.runtime import ScraperRuntimeController
 from scraper.storage.mongodb_storage import db_manager
 
@@ -50,7 +51,7 @@ class ScraperDashboardService:
         self._mode = "idle"
         self._pending_restart: ScraperRunConfig | None = None
         self._activity_id = None
-        self._license_key = ""
+        self._access_identity = ""
 
     def _emit(self, event_type, payload=None):
         self._events.put({"type": event_type, "payload": payload or {}})
@@ -74,7 +75,7 @@ class ScraperDashboardService:
                 "busy": self._thread is not None,
                 "runtime": runtime_snapshot,
                 "restart_queued": self._pending_restart is not None,
-                "license_key": self._license_key,
+                "access_identity": self._access_identity,
             }
 
     def refresh_summary(self, source):
@@ -86,8 +87,14 @@ class ScraperDashboardService:
         with self._lock:
             if self._thread is not None:
                 return False
-            self._license_key = str(config.license_key or "").strip().upper()
-            access = db_manager.request_access(self._license_key, config.source, config.url)
+            self._access_identity = (
+                get_device_id() if not config.access_identity else config.access_identity
+            )
+            access = db_manager.request_access(
+                self._access_identity,
+                config.source,
+                config.url,
+            )
             if not access.get("allowed"):
                 status = access.get("status", "unknown")
                 message = access.get("message", "Access is not approved.")
@@ -111,7 +118,7 @@ class ScraperDashboardService:
             self._activity_id = db_manager.track_start(
                 config.source,
                 config.url,
-                license_key=self._license_key,
+                license_key=self._access_identity,
             )
 
             self._thread = threading.Thread(
@@ -170,6 +177,9 @@ class ScraperDashboardService:
                     out_filename=config.out_filename,
                     logger=runtime.log,
                     runtime=runtime,
+                    access_identity=self._access_identity,
+                    access_prechecked=True,
+                    track_activity=False,
                 )
             )
             # Finalize activity in DB
@@ -208,12 +218,16 @@ class ScraperDashboardService:
                 self._emit_log("[SYSTEM] Restarting scraper with current panel settings...")
                 self.start_run(pending_restart)
 
-    def start_export(self, source, quality_filter, license_key=""):
+    def start_export(self, source, quality_filter, access_identity=""):
         with self._lock:
             if self._thread is not None:
                 return False
-            self._license_key = str(license_key or self._license_key or "").strip().upper()
-            access = db_manager.request_access(self._license_key, source, "export_final_only")
+            self._access_identity = access_identity or self._access_identity or get_device_id()
+            access = db_manager.request_access(
+                self._access_identity,
+                source,
+                "export_final_only",
+            )
             if not access.get("allowed"):
                 status = access.get("status", "unknown")
                 message = access.get("message", "Access is not approved.")
@@ -240,6 +254,8 @@ class ScraperDashboardService:
                 source,
                 quality_filter=quality_filter,
                 logger=self._emit_log,
+                access_identity=self._access_identity,
+                access_prechecked=True,
             )
             self._emit("export", {"result": export_result, "source": source})
         except EXPORT_TASK_ERRORS as exc:
@@ -299,17 +315,15 @@ class ScraperDashboardService:
     def open_system_path(self, path):
         open_path(path)
 
-    def record_profile_result(self, profile_url, result):
+    def record_profile_result(self, _profile_url, _result):
         """Called by runtime to sync progress to DB."""
         if self._activity_id and self._runtime:
             snap = self._runtime.snapshot()
             db_manager.update_activity(self._activity_id, snap.master_saved)
 
-    def get_billing_info(self, license_key=""):
+    def get_billing_info(self, access_identity=""):
         """Calculate bills: 0.5 PKR per email."""
-        clean_license = str(license_key or self._license_key or "").strip().upper()
-        if not clean_license:
-            return {"emails": 0, "pkr": 0.0, "usd": 0.0, "sessions": 0}
+        clean_license = access_identity or self._access_identity or get_device_id()
         stats = db_manager.get_user_stats(clean_license)
         emails = stats.get("total_emails", 0)
         pkr = emails * 0.5

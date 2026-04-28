@@ -79,9 +79,18 @@ class StorageExportTests(unittest.TestCase):
             try:
                 csv_storage.ACTIVE_PATHS.update(
                     {
+                        "source": "houzz",
                         "detail_output_file": str(detail_file),
                         "final_output_file": str(final_file),
                         "final_detail_file": str(final_detail_file),
+                        "excel_export_file": str(root / "export.xlsx"),
+                        "duplicate_report_file": str(root / "duplicates.csv"),
+                        "high_quality_output_file": str(root / "high.csv"),
+                        "high_quality_detail_file": str(root / "high_detail.csv"),
+                        "medium_quality_output_file": str(root / "medium.csv"),
+                        "medium_quality_detail_file": str(root / "medium_detail.csv"),
+                        "low_quality_output_file": str(root / "low.csv"),
+                        "low_quality_detail_file": str(root / "low_detail.csv"),
                         "fail_log_file": str(root / "failures.csv"),
                     }
                 )

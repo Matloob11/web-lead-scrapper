@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from threading import Event, Lock
+from typing import Any
 
 
 def _now_iso():
@@ -73,7 +74,7 @@ class ScraperRuntimeController:
         self._on_log = on_log
         self._on_snapshot = on_snapshot
         self._snapshot = RuntimeSnapshot()
-        self.service = None
+        self.service: Any | None = None
 
     def snapshot(self):
         with self._lock:

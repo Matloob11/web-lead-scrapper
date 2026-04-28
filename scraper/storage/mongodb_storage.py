@@ -1,3 +1,4 @@
+import os
 import socket
 from datetime import datetime
 from time import monotonic
@@ -6,14 +7,18 @@ from typing import Any
 from pymongo import MongoClient
 from pymongo.errors import ConfigurationError, ConnectionFailure, OperationFailure, PyMongoError
 
-# MongoDB connection details
-MONGO_URI = "mongodb+srv://dbmatloob:222007matloob@cluster0.trwuj2z.mongodb.net/?appName=Cluster0"
+MONGO_URI_ENV_VAR = "MATLOOB_MONGO_URI"
 DB_NAME = "matloob_scraper"
 ACCESS_PENDING = "pending"
 ACCESS_APPROVED = "approved"
 ACCESS_BLOCKED = "blocked"
 ACCESS_STATUSES = {ACCESS_PENDING, ACCESS_APPROVED, ACCESS_BLOCKED}
 BILLING_RATE_PKR = 0.5
+
+
+def get_mongo_uri() -> str:
+    """Return the configured MongoDB URI without embedding credentials in code."""
+    return os.environ.get(MONGO_URI_ENV_VAR, "").strip()
 
 
 class MongoDBManager:
@@ -36,9 +41,18 @@ class MongoDBManager:
         if now - self._last_failed_connect_at < self._connect_retry_seconds:
             return False
 
+        mongo_uri = get_mongo_uri()
+        if not mongo_uri:
+            print(f"MongoDB Connection Error: {MONGO_URI_ENV_VAR} is not set.")
+            self._connected = False
+            self.db = None
+            self.client = None
+            self._last_failed_connect_at = now
+            return False
+
         try:
             self.client = MongoClient(
-                MONGO_URI,
+                mongo_uri,
                 serverSelectionTimeoutMS=2000,
                 connectTimeoutMS=2000,
             )
@@ -61,8 +75,8 @@ class MongoDBManager:
             self.client.close()
             self._connected = False
 
-    def normalize_license_key(self, license_key: str) -> str:
-        """Normalize a user-entered license key for stable DB lookups."""
+    def normalize_license_key(self, license_key: str | None) -> str:
+        """Normalize an access identity for stable DB lookups."""
         return str(license_key or "").strip().upper()
 
     def _user_filter(self, license_key: str, computer_name: str | None = None):
@@ -83,8 +97,8 @@ class MongoDBManager:
         if not clean_license:
             return {
                 "allowed": False,
-                "status": "license_required",
-                "message": "License key is required before scraping can start.",
+                "status": "identity_required",
+                "message": "Device identity is required before scraping can start.",
             }
         if not self._connect_or_status() or self.db is None:
             return {
@@ -102,11 +116,13 @@ class MongoDBManager:
                     {
                         "$setOnInsert": {
                             **identity,
+                            "identity_type": "device_id",
                             "access_status": ACCESS_PENDING,
                             "is_blocked": False,
                             "first_seen": now,
                         },
                         "$set": {
+                            "identity_type": "device_id",
                             "last_seen": now,
                             "last_request_at": now,
                             "last_requested_source": source,
@@ -127,14 +143,15 @@ class MongoDBManager:
             status = str(user.get("access_status") or "").strip().lower()
             if user.get("is_blocked"):
                 status = ACCESS_BLOCKED
-            if not status:
-                status = ACCESS_APPROVED if not user.get("is_blocked") else ACCESS_BLOCKED
+            if status not in ACCESS_STATUSES:
+                status = ACCESS_PENDING
 
             self.db.users.update_one(
                 identity,
                 {
                     "$set": {
                         "access_status": status,
+                        "identity_type": "device_id",
                         "last_seen": now,
                         "last_request_at": now,
                         "last_requested_source": source,
@@ -161,7 +178,7 @@ class MongoDBManager:
                 "status": ACCESS_PENDING,
                 "message": "Access pending. Admin approval is required before scraping.",
             }
-        except Exception as e:
+        except PyMongoError as e:
             print(f"Error requesting access in MongoDB: {e}")
             return {
                 "allowed": False,
@@ -180,6 +197,7 @@ class MongoDBManager:
         activity = {
             "computer_name": self.computer_name,
             "license_key": clean_license,
+            "identity_type": "device_id",
             "source": source,
             "target_url": url,
             "start_time": datetime.now(),
@@ -191,7 +209,7 @@ class MongoDBManager:
         try:
             result = self.db.user_activity.insert_one(activity)
             return result.inserted_id
-        except Exception as e:
+        except PyMongoError as e:
             print(f"Error tracking start in MongoDB: {e}")
             return None
 
@@ -211,7 +229,7 @@ class MongoDBManager:
                     }
                 },
             )
-        except Exception as e:
+        except PyMongoError as e:
             print(f"Error updating MongoDB activity: {e}")
 
     def get_user_stats(self, license_key: str = ""):
@@ -245,7 +263,7 @@ class MongoDBManager:
                     "total_sessions": results[0]["total_sessions"],
                     "bill_pkr": total_emails * BILLING_RATE_PKR,
                 }
-        except Exception as e:
+        except PyMongoError as e:
             print(f"Error fetching user stats: {e}")
 
         return {"total_emails": 0, "total_sessions": 0, "bill_pkr": 0.0}
@@ -341,7 +359,7 @@ class MongoDBManager:
                 )
             )
             return rows
-        except Exception as e:
+        except PyMongoError as e:
             print(f"Error fetching admin stats: {e}")
             return []
 
@@ -363,7 +381,7 @@ class MongoDBManager:
 
         try:
             return list(self.db.users.find({}))
-        except Exception as e:
+        except PyMongoError as e:
             print(f"Error fetching registered users: {e}")
             return []
 
@@ -381,7 +399,7 @@ class MongoDBManager:
                 user_filter["license_key"] = clean_license
             user = self.db.users.find_one(user_filter)
             return bool(user and self._coerce_access_status(user) == ACCESS_BLOCKED)
-        except Exception as e:
+        except PyMongoError as e:
             print(f"Error checking block status: {e}")
         return False
 
@@ -403,6 +421,7 @@ class MongoDBManager:
         set_fields = {
             "computer_name": clean_computer,
             "license_key": clean_license,
+            "identity_type": "device_id",
             "access_status": clean_status,
             "is_blocked": is_blocked,
             "updated_at": now,
@@ -419,7 +438,7 @@ class MongoDBManager:
                 upsert=True,
             )
             return True
-        except Exception as e:
+        except PyMongoError as e:
             print(f"Error setting access status: {e}")
             return False
 

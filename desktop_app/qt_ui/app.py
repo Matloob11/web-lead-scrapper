@@ -45,7 +45,8 @@ from desktop_app.view_models import (
     safe_int,
     summary_file_paths,
 )
-from scraper.config import PROJECT_ROOT, RUNTIME_DIR
+from scraper.config import PROJECT_ROOT
+from scraper.identity import get_device_id
 
 MAX_WIDGET_SIZE = 16777215
 SHELL_STACK_BREAKPOINT = 940
@@ -177,9 +178,10 @@ class QtDashboardWindow(QMainWindow):
         config_label.setObjectName("Muted")
         layout.addWidget(config_label)
 
-        layout.addWidget(QLabel("License Key:"))
-        self.license_key_input = self._line_edit("Required")
-        layout.addWidget(self.license_key_input)
+        layout.addWidget(QLabel("Device ID:"))
+        self.device_id_input = self._line_edit("Automatic")
+        self.device_id_input.setReadOnly(True)
+        layout.addWidget(self.device_id_input)
 
         layout.addWidget(QLabel("Target Pages:"))
         self.max_pages_input = self._line_edit("Optional")
@@ -530,7 +532,7 @@ class QtDashboardWindow(QMainWindow):
         self._update_billing_ui()
 
     def _update_billing_ui(self) -> None:
-        bill = self.service.get_billing_info(self.current_license_key())
+        bill = self.service.get_billing_info(self.current_device_id())
         self.sidebar_billing_label.setText(f"Est. Bill: {bill['pkr']:.2f} PKR")
 
         if self.content_stack.currentIndex() == 2:  # Billing page
@@ -656,7 +658,7 @@ class QtDashboardWindow(QMainWindow):
         return ScraperRunConfig(
             url=self.target_url_input.text().strip(),
             source=self.current_source(),
-            license_key=self.current_license_key(),
+            access_identity=self.current_device_id(),
             max_pages=safe_int(self.max_pages_input.text()),
             max_profiles=safe_int(self.max_profiles_input.text()),
             headless=self.headless_check.isChecked(),
@@ -671,18 +673,10 @@ class QtDashboardWindow(QMainWindow):
 
     def _on_start_click(self) -> None:
         config = self._build_run_config()
-        if not config.license_key:
-            QMessageBox.information(
-                self,
-                "Missing License",
-                "Please enter your license key before starting.",
-            )
-            return
         if not config.url:
             QMessageBox.information(self, "Missing URL", "Please enter a target search URL.")
             return
 
-        self._save_license_key(config.license_key)
         if self.service.start_run(config):
             self.summary_snapshot = {}  # Reset to force refresh
             self.log_console.clear()
@@ -718,17 +712,9 @@ class QtDashboardWindow(QMainWindow):
             )
 
     def _on_export_click(self) -> None:
-        license_key = self.current_license_key()
-        if not license_key:
-            QMessageBox.information(
-                self,
-                "Missing License",
-                "Please enter your license key before exporting.",
-            )
-            return
-        self._save_license_key(license_key)
+        device_id = self.current_device_id()
         quality_filter = ("high",) if self.email_only_check.isChecked() else ("high", "medium")
-        if not self.service.start_export(self.current_source(), quality_filter, license_key):
+        if not self.service.start_export(self.current_source(), quality_filter, device_id):
             QMessageBox.warning(
                 self,
                 "Export Blocked",
@@ -759,29 +745,9 @@ class QtDashboardWindow(QMainWindow):
         """Return the currently selected scraper source."""
         return "bbb" if self.source_combo.currentText().lower() == "bbb" else "houzz"
 
-    def current_license_key(self) -> str:
-        """Return the normalized license key from the user dashboard."""
-        return self.license_key_input.text().strip().upper()
-
-    def _license_key_file(self) -> Path:
-        return Path(RUNTIME_DIR) / "license_key.txt"
-
-    def _load_license_key(self) -> str:
-        path = self._license_key_file()
-        try:
-            if path.exists():
-                return path.read_text(encoding="utf-8").strip().upper()
-        except OSError:
-            return ""
-        return ""
-
-    def _save_license_key(self, license_key: str) -> None:
-        path = self._license_key_file()
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(license_key.strip().upper(), encoding="utf-8")
-        except OSError as exc:
-            self._append_log(f"[WARN] Could not save license key: {exc}")
+    def current_device_id(self) -> str:
+        """Return the automatic device identity used for admin approval."""
+        return self.device_id_input.text().strip().upper() or get_device_id()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -825,9 +791,7 @@ class QtDashboardWindow(QMainWindow):
         self._current_cols = columns
 
     def _seed_defaults(self) -> None:
-        saved_license = self._load_license_key()
-        if saved_license:
-            self.license_key_input.setText(saved_license)
+        self.device_id_input.setText(get_device_id())
         self.log_console.clear()
         self.summary_snapshot = build_source_summary(self.current_source()).as_dict()
 
