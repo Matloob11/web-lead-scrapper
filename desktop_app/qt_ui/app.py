@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -126,10 +127,18 @@ class QtDashboardWindow(QMainWindow):
         self.data_page = self._build_dedicated_data_page()
         self.content_stack.addWidget(self.data_page)
 
+        # Page 2: Billing
+        self.billing_page = self._build_billing_page()
+        self.content_stack.addWidget(self.billing_page)
+
+        # Page 3: Admin
+        self.admin_page = self._build_admin_page()
+        self.content_stack.addWidget(self.admin_page)
+
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(240)
+        sidebar.setFixedWidth(260)
 
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(15, 20, 15, 20)
@@ -152,16 +161,21 @@ class QtDashboardWindow(QMainWindow):
         self.nav_data = self._nav_button(
             "Data Center", QStyle.StandardPixmap.SP_DirHomeIcon, "data"
         )
+        self.nav_billing = self._nav_button(
+            "My Billing", QStyle.StandardPixmap.SP_FileDialogDetailedView, "billing"
+        )
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.addButton(self.nav_houzz)
         self.nav_group.addButton(self.nav_bbb)
         self.nav_group.addButton(self.nav_data)
+        self.nav_group.addButton(self.nav_billing)
         self.nav_houzz.setChecked(True)
 
         layout.addWidget(self.nav_houzz)
         layout.addWidget(self.nav_bbb)
         layout.addWidget(self.nav_data)
+        layout.addWidget(self.nav_billing)
         layout.addSpacing(15)
 
         config_label = QLabel("CONFIGURATION")
@@ -200,6 +214,13 @@ class QtDashboardWindow(QMainWindow):
 
         layout.addStretch(1)
 
+        # Billing Quick View
+        self.sidebar_billing_label = QLabel("Est. Bill: 0.00 PKR")
+        self.sidebar_billing_label.setObjectName("Muted")
+        self.sidebar_billing_label.setStyleSheet("font-weight: bold; color: #34b978;")
+        layout.addWidget(self.sidebar_billing_label)
+        layout.addSpacing(5)
+
         # System Status
         self.status_dot = QLabel("●  Idle")
         self.status_dot.setObjectName("StatusIdle")
@@ -235,6 +256,9 @@ class QtDashboardWindow(QMainWindow):
         elif view == "data":
             self.nav_data.setChecked(True)
             self.content_stack.setCurrentIndex(1)
+        elif view == "billing":
+            self.nav_billing.setChecked(True)
+            self.content_stack.setCurrentIndex(2)
 
         self._refresh_dashboard()
 
@@ -271,6 +295,39 @@ class QtDashboardWindow(QMainWindow):
         btn_row.addWidget(self.refresh_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
+
+        return page
+
+    def _build_billing_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(20)
+
+        header = QLabel("My Billing & Usage")
+        header.setObjectName("PageTitle")
+        layout.addWidget(header)
+
+        self.billing_card_container = QWidget()
+        self.billing_grid = QGridLayout(self.billing_card_container)
+        
+        self.bill_emails_card = MetricCard("Total Emails", "#34b978")
+        self.bill_pkr_card = MetricCard("Bill (PKR)", "#d7a13f")
+        self.bill_usd_card = MetricCard("Bill (USD)", "#6aa6ff")
+        self.bill_sessions_card = MetricCard("Total Sessions", "#e16666")
+
+        self.billing_grid.addWidget(self.bill_emails_card, 0, 0)
+        self.billing_grid.addWidget(self.bill_pkr_card, 0, 1)
+        self.billing_grid.addWidget(self.bill_usd_card, 1, 0)
+        self.billing_grid.addWidget(self.bill_sessions_card, 1, 1)
+        
+        self.billing_card_container.setMinimumHeight(160)
+        layout.addWidget(self.billing_card_container)
+        
+        details = QLabel("Note: Billing is calculated at 0.5 PKR per email fetched.")
+        details.setObjectName("Muted")
+        layout.addWidget(details)
+        layout.addStretch()
 
         return page
 
@@ -435,6 +492,20 @@ class QtDashboardWindow(QMainWindow):
         self._apply_runtime(self.runtime_snapshot)
         self._apply_summary(self.summary_snapshot)
         self._update_status(state)
+        self._update_billing_ui()
+
+    def _update_billing_ui(self) -> None:
+        bill = self.service.get_billing_info()
+        self.sidebar_billing_label.setText(f"Est. Bill: {bill['pkr']:.2f} PKR")
+        
+        if self.content_stack.currentIndex() == 2:  # Billing page
+            self.bill_emails_card.set_metric(bill['emails'])
+            self.bill_pkr_card.set_metric(f"{bill['pkr']:.2f}")
+            self.bill_usd_card.set_metric(f"${bill['usd']:.2f}")
+            self.bill_sessions_card.set_metric(bill['sessions'])
+        
+        if self.content_stack.currentIndex() == 3:  # Admin page
+            self._refresh_admin_stats()
 
     def _drain_service_events(self) -> None:
         for event in self.service.drain_events():

@@ -73,6 +73,7 @@ class ScraperRuntimeController:
         self._on_log = on_log
         self._on_snapshot = on_snapshot
         self._snapshot = RuntimeSnapshot()
+        self.service = None
 
     def snapshot(self):
         with self._lock:

@@ -306,6 +306,14 @@ async def run_houzz_search(
                 if runtime:
                     runtime.record_profile_result(pro_link, result)
 
+                # Signal service to update DB
+                if hasattr(runtime, "service") and runtime.service:
+                    runtime.service.record_profile_result(pro_link, result)
+                
+                # Signal service to update DB
+                if hasattr(runtime, 'service') and runtime.service:
+                    runtime.service.record_profile_result(pro_link, result)
+
         await goto_with_retry(
             main_page,
             input_url,

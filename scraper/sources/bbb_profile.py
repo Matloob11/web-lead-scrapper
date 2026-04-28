@@ -462,6 +462,10 @@ async def run_bbb_search(
                 if runtime:
                     runtime.record_profile_result(profile_url, result)
 
+                # Signal service to update DB
+                if hasattr(runtime, "service") and runtime.service:
+                    runtime.service.record_profile_result(profile_url, result)
+
             if stop_requested_flag:
                 if (stop_event and stop_event.is_set()) or (
                     runtime and runtime.is_stop_requested()

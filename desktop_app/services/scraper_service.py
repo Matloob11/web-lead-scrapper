@@ -16,6 +16,7 @@ from desktop_app.services.file_service import (
 )
 from houzz_pro_scraper import export_final_for_source, run_scraper
 from scraper.runtime import ScraperRuntimeController
+from scraper.storage.mongodb_storage import db_manager
 
 SCRAPER_TASK_ERRORS = (csv.Error, OSError, PlaywrightError, RuntimeError, ValueError)
 EXPORT_TASK_ERRORS = (csv.Error, OSError, RuntimeError, ValueError)
@@ -38,9 +39,17 @@ class ScraperDashboardService:
         self._events: queue.Queue[dict[str, Any]] = queue.Queue()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._runtime: ScraperRuntimeController | None = None
+        self._runtime: ScraperRuntimeController = ScraperRuntimeController(
+            on_log=self._emit_log,
+            on_snapshot=lambda snapshot: self._emit(
+                "runtime",
+                {"snapshot": snapshot.as_dict()},
+            ),
+        )
+        self._runtime.service = self
         self._mode = "idle"
         self._pending_restart: ScraperRunConfig | None = None
+        self._activity_id = None
 
     def _emit(self, event_type, payload=None):
         self._events.put({"type": event_type, "payload": payload or {}})
@@ -75,14 +84,25 @@ class ScraperDashboardService:
         with self._lock:
             if self._thread is not None:
                 return False
-            self._runtime = ScraperRuntimeController(
-                on_log=self._emit_log,
-                on_snapshot=lambda snapshot: self._emit(
-                    "runtime",
-                    {"snapshot": snapshot.as_dict()},
-                ),
+            # Check for remote block
+            db_manager.connect()
+            if db_manager.check_block_status():
+                self._emit_log("[CRITICAL] Access Denied: Your access has been restricted by Admin. Please clear your dues.")
+                self._emit("task", {"mode": "scrape", "status": "failed", "error": "Access Denied"})
+                return False
+
+            self._runtime.start_run(
+                config.source,
+                config.url,
+                max_pages=config.max_pages,
+                max_profiles=config.max_profiles,
             )
             self._mode = "scrape"
+            
+            # Start MongoDB tracking
+            db_manager.connect()
+            self._activity_id = db_manager.track_start(config.source, config.url)
+            
             self._thread = threading.Thread(
                 target=self._run_scrape_task,
                 args=(config,),
@@ -141,8 +161,15 @@ class ScraperDashboardService:
                     runtime=runtime,
                 )
             )
+            # Finalize activity in DB
+            if self._activity_id:
+                snap = self._runtime.snapshot() if self._runtime else None
+                emails_count = snap.processed if snap else 0
+                db_manager.update_activity(self._activity_id, emails_count, status="completed")
         except SCRAPER_TASK_ERRORS as exc:
             self._emit_log(f"[ERROR] {exc}")
+            if self._activity_id:
+                db_manager.update_activity(self._activity_id, 0, status=f"failed: {exc}")
             if self._runtime:
                 self._runtime.complete_run(error_message=str(exc))
         finally:
@@ -152,7 +179,9 @@ class ScraperDashboardService:
             with self._lock:
                 self._thread = None
                 self._mode = "idle"
-                self._runtime = None
+                # Keep runtime but signal completion
+                self._runtime.complete_run()
+                self._activity_id = None
                 pending_restart = self._pending_restart
                 self._pending_restart = None
 
@@ -241,3 +270,26 @@ class ScraperDashboardService:
 
     def open_system_path(self, path):
         open_path(path)
+
+    def record_profile_result(self, profile_url, result):
+        """Called by runtime to sync progress to DB."""
+        if self._activity_id and self._runtime:
+            snap = self._runtime.snapshot()
+            db_manager.update_activity(self._activity_id, snap.processed)
+
+    def get_billing_info(self):
+        """Calculate bills: 0.5 PKR per email."""
+        stats = db_manager.get_user_stats()
+        emails = stats.get("total_emails", 0)
+        pkr = emails * 0.5
+        usd = pkr / 280.0  # Approx rate
+        return {
+            "emails": emails,
+            "pkr": pkr,
+            "usd": usd,
+            "sessions": stats.get("total_sessions", 0)
+        }
+
+    def get_admin_stats(self):
+        """Get stats for all users."""
+        return db_manager.get_admin_dashboard_stats()
