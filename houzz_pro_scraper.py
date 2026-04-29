@@ -18,7 +18,6 @@ from scraper.config import (
     PROFILE_TIMEOUT_MS,
 )
 from scraper.control import responsive_sleep, stop_requested
-from scraper.identity import DEVICE_ID_ENV_VAR, get_device_id, normalize_device_id
 from scraper.sources.bbb_profile import run_bbb_search
 from scraper.sources.houzz_profile import process_profile
 from scraper.storage.csv_storage import (
@@ -32,7 +31,6 @@ from scraper.storage.csv_storage import (
     set_active_source,
     write_statuses,
 )
-from scraper.storage.mongodb_storage import db_manager
 from scraper.utils import (
     compact_whitespace,
     infer_country_from_url,
@@ -67,33 +65,6 @@ def print_summary(stats, logger=print):
     logger(f"Detail rows:        {stats['detail_saved']}")
 
 
-def resolve_access_identity(device_id=None, access_identity=None):
-    """Resolve the admin access identity without requiring user-entered license text."""
-    explicit_identity = normalize_device_id(device_id or access_identity)
-    return explicit_identity or get_device_id()
-
-
-def require_admin_access(access_identity, source, target, logger=print):
-    """Require MongoDB admin approval before allowing scraper work."""
-    clean_license = db_manager.normalize_license_key(access_identity)
-    access = db_manager.request_access(clean_license, source, target)
-    if access.get("allowed"):
-        logger("[SYSTEM] Access approved by admin panel.")
-        return clean_license
-
-    status = str(access.get("status") or "unknown").strip()
-    message = str(access.get("message") or "Access is not approved.").strip()
-    raise PermissionError(f"{message} [status: {status}]")
-
-
-def _finish_activity(activity_id, emails_count, status):
-    """Best-effort MongoDB activity update for CLI-owned runs."""
-    if activity_id is None:
-        return
-    with contextlib.suppress(Exception):
-        db_manager.update_activity(activity_id, emails_count, status=status)
-
-
 async def run_scraper(
     input_url,
     source="houzz",
@@ -110,23 +81,10 @@ async def run_scraper(
     logger=print,
     stop_event=None,
     runtime=None,
-    access_identity=None,
-    device_id=None,
-    access_prechecked=False,
-    track_activity=True,
 ):
     """Launch a full scraper run for the given source URL."""
 
     source = normalize_source(source)
-    clean_license = resolve_access_identity(device_id=device_id, access_identity=access_identity)
-    if not access_prechecked:
-        clean_license = require_admin_access(clean_license, source, input_url, logger=logger)
-
-    activity_id = (
-        db_manager.track_start(source, input_url, license_key=clean_license)
-        if track_activity
-        else None
-    )
     stats = init_stats()
 
     async with async_playwright() as p:
@@ -236,7 +194,6 @@ async def run_scraper(
             print_summary(stats, logger=logger)
             logger(f"\n[DONE] Master data saved to {output_file}")
             logger(f"[DONE] Detailed data saved to {detail_output_file}")
-            _finish_activity(activity_id, stats["master_saved"], "completed")
             if runtime:
                 runtime.complete_run()
         except SCRAPER_RUN_ERRORS as exc:
@@ -244,11 +201,9 @@ async def run_scraper(
                 write_statuses(status_map)
             if stop_requested(runtime, stop_event):
                 logger("[SYSTEM] Stop completed. Browser work was interrupted safely.")
-                _finish_activity(activity_id, stats["master_saved"], "stopped")
                 if runtime:
                     runtime.complete_run()
                 return
-            _finish_activity(activity_id, stats["master_saved"], f"failed: {exc}")
             if runtime:
                 runtime.complete_run(error_message=str(exc))
             raise
@@ -268,15 +223,9 @@ def export_final_for_source(
     quality_filter=None,
     out_filename=None,
     logger=print,
-    access_identity=None,
-    device_id=None,
-    access_prechecked=False,
 ):
     """Export final quality-filtered emails for a source without scraping."""
     source = normalize_source(source)
-    clean_license = resolve_access_identity(device_id=device_id, access_identity=access_identity)
-    if not access_prechecked:
-        require_admin_access(clean_license, source, "export_final_only", logger=logger)
     set_active_source(source, out_filename=out_filename)
     ensure_output_files()
     export_result = export_final_emails(quality_filter)
@@ -365,10 +314,6 @@ async def run_houzz_search(
                 stats["detail_saved"] += result["detail_saved"]
                 if runtime:
                     runtime.record_profile_result(pro_link, result)
-
-                # Signal service to update DB
-                if hasattr(runtime, "service") and runtime.service:
-                    runtime.service.record_profile_result(pro_link, result)
 
         await goto_with_retry(
             main_page,
@@ -526,13 +471,6 @@ def parse_args():
         default=["high", "medium"],
         help="Email qualities to include in final export",
     )
-    parser.add_argument(
-        "--device-id",
-        help=(
-            "Optional device identity override for admin approval. If omitted, "
-            f"{DEVICE_ID_ENV_VAR} or the automatic machine ID is used."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -540,38 +478,32 @@ def main() -> None:
     """Parse CLI arguments and launch the appropriate scraper."""
     args = parse_args()
     source = normalize_source(args.source) if args.source else prompt_source()
-    device_id = resolve_access_identity(device_id=args.device_id)
 
-    try:
-        if args.export_final_only:
-            export_final_for_source(source, args.quality_filter, device_id=device_id)
-            raise SystemExit(0)
+    if args.export_final_only:
+        export_final_for_source(source, args.quality_filter)
+        raise SystemExit(0)
 
-        label = "BBB" if source == "bbb" else "Houzz"
-        url_to_scrape = (args.url or input(f"Enter {label} Search URL: ").strip()).strip()
-        if url_to_scrape:
-            asyncio.run(
-                run_scraper(
-                    url_to_scrape,
-                    source=source,
-                    max_pages=args.max_pages,
-                    max_profiles=args.max_profiles,
-                    headless=args.headless,
-                    skip_facebook=args.skip_facebook,
-                    country=args.country,
-                    skip_google_fallback=args.skip_google_fallback,
-                    auto_export_final=not args.no_final_export,
-                    quality_filter=args.quality_filter,
-                    retry_no_email=args.retry_no_email,
-                    out_filename=args.out_filename,
-                    device_id=device_id,
-                )
+    label = "BBB" if source == "bbb" else "Houzz"
+    url_to_scrape = (args.url or input(f"Enter {label} Search URL: ").strip()).strip()
+    if url_to_scrape:
+        asyncio.run(
+            run_scraper(
+                url_to_scrape,
+                source=source,
+                max_pages=args.max_pages,
+                max_profiles=args.max_profiles,
+                headless=args.headless,
+                skip_facebook=args.skip_facebook,
+                country=args.country,
+                skip_google_fallback=args.skip_google_fallback,
+                auto_export_final=not args.no_final_export,
+                quality_filter=args.quality_filter,
+                retry_no_email=args.retry_no_email,
+                out_filename=args.out_filename,
             )
-        else:
-            print("URL is required.")
-    except PermissionError as exc:
-        print(f"[SYSTEM] {exc}")
-        raise SystemExit(1) from exc
+        )
+    else:
+        print("URL is required.")
 
 
 if __name__ == "__main__":

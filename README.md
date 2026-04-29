@@ -28,10 +28,7 @@ Or run a source directly:
 .\.venv\Scripts\python.exe houzz_pro_scraper.py --source bbb --url "BBB_SEARCH_URL"
 ```
 
-Direct CLI runs use the same MongoDB admin approval rules as the desktop dashboard. The
-app creates an automatic device ID, sends it to the admin panel, and waits for approval.
-For support/testing, override it with `--device-id` or the `MATLOOB_DEVICE_ID`
-environment variable.
+Direct CLI runs and the desktop dashboard start locally with no remote gate.
 
 ## Output
 
@@ -84,13 +81,6 @@ Short BBB smoke test:
 python -m venv .venv
 .\.venv\Scripts\pip.exe install -r setup\requirements.txt
 .\.venv\Scripts\playwright.exe install chromium
-```
-
-MongoDB admin approval requires a connection URI in the environment. Do not commit
-real credentials into the codebase:
-
-```powershell
-$env:MATLOOB_MONGO_URI="<your MongoDB connection URI>"
 ```
 
 Email outreach credentials must also stay out of source code:

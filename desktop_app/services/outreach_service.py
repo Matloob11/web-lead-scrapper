@@ -790,22 +790,26 @@ def summarize_decisions(decisions: list[RecipientDecision]) -> dict[str, int]:
     return summary
 
 
-def replace_decision(decision: RecipientDecision, **changes: str) -> RecipientDecision:
+def replace_decision(
+    decision: RecipientDecision,
+    *,
+    status: str | None = None,
+    reason: str | None = None,
+    message_id: str | None = None,
+) -> RecipientDecision:
     """Return a copy of a decision with changed fields."""
-    data = {
-        "email": decision.email,
-        "status": decision.status,
-        "reason": decision.reason,
-        "variant": decision.variant,
-        "subject": decision.subject,
-        "body": decision.body,
-        "risk_score": decision.risk_score,
-        "risk_level": decision.risk_level,
-        "warnings": decision.warnings,
-        "message_id": decision.message_id,
-    }
-    data.update(changes)
-    return RecipientDecision(**data)
+    return RecipientDecision(
+        email=decision.email,
+        status=decision.status if status is None else status,
+        reason=decision.reason if reason is None else reason,
+        variant=decision.variant,
+        subject=decision.subject,
+        body=decision.body,
+        risk_score=decision.risk_score,
+        risk_level=decision.risk_level,
+        warnings=decision.warnings,
+        message_id=decision.message_id if message_id is None else message_id,
+    )
 
 
 class DefaultFormatMap(dict[str, str]):

@@ -9,7 +9,6 @@ class ScraperRunConfig:
 
     url: str = ""
     source: str = "houzz"
-    access_identity: str = ""
     max_pages: int | None = None
     max_profiles: int | None = None
     headless: bool = False

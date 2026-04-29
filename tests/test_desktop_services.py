@@ -286,55 +286,22 @@ class DesktopServiceTests(unittest.TestCase):
 
         self.assertTrue(any(event["type"] == "outreach" for event in events))
 
-    def test_dashboard_service_uses_auto_device_id_without_user_license(self):
+    def test_dashboard_service_starts_scrape_without_access_control_gate(self):
         service = ScraperDashboardService()
         fake_thread = MagicMock()
 
-        with (
-            patch(
-                "desktop_app.services.scraper_service.get_device_id",
-                return_value="DEVICE-TEST",
-            ),
-            patch(
-                "desktop_app.services.scraper_service.db_manager.request_access",
-                return_value={
-                    "allowed": True,
-                    "status": "approved",
-                    "message": "Access approved.",
-                },
-            ) as request_access,
-            patch(
-                "desktop_app.services.scraper_service.db_manager.track_start",
-                return_value=None,
-            ) as track_start,
-            patch(
-                "desktop_app.services.scraper_service.db_manager.connect",
-                return_value=True,
-            ),
-            patch(
-                "desktop_app.services.scraper_service.threading.Thread",
-                return_value=fake_thread,
-            ),
+        with patch(
+            "desktop_app.services.scraper_service.threading.Thread",
+            return_value=fake_thread,
         ):
             started = service.start_run(
                 ScraperRunConfig(
                     url="https://www.houzz.com/professionals",
                     source="houzz",
-                    access_identity="",
                 )
             )
 
         self.assertTrue(started)
-        request_access.assert_called_once_with(
-            "DEVICE-TEST",
-            "houzz",
-            "https://www.houzz.com/professionals",
-        )
-        track_start.assert_called_once_with(
-            "houzz",
-            "https://www.houzz.com/professionals",
-            license_key="DEVICE-TEST",
-        )
         fake_thread.start.assert_called_once()
 
     def test_runtime_controller_tracks_progress_and_completion(self):

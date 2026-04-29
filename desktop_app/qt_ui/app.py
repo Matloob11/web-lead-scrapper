@@ -48,7 +48,6 @@ from desktop_app.view_models import (
     summary_file_paths,
 )
 from scraper.config import PROJECT_ROOT
-from scraper.identity import get_device_id
 
 MAX_WIDGET_SIZE = 16777215
 SHELL_STACK_BREAKPOINT = 940
@@ -140,11 +139,7 @@ class QtDashboardWindow(QMainWindow):
         self.data_page = self._build_dedicated_data_page()
         self.content_stack.addWidget(self.data_page)
 
-        # Page 2: Billing
-        self.billing_page = self._build_billing_page()
-        self.content_stack.addWidget(self.billing_page)
-
-        # Page 3: Email Outreach
+        # Page 2: Email Outreach
         self.outreach_page = self._build_outreach_page()
         self.content_stack.addWidget(self.outreach_page)
 
@@ -177,33 +172,23 @@ class QtDashboardWindow(QMainWindow):
         self.nav_outreach = self._nav_button(
             "Email Outreach", QStyle.StandardPixmap.SP_FileDialogInfoView, "outreach"
         )
-        self.nav_billing = self._nav_button(
-            "My Billing", QStyle.StandardPixmap.SP_FileDialogDetailedView, "billing"
-        )
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.addButton(self.nav_houzz)
         self.nav_group.addButton(self.nav_bbb)
         self.nav_group.addButton(self.nav_data)
         self.nav_group.addButton(self.nav_outreach)
-        self.nav_group.addButton(self.nav_billing)
         self.nav_houzz.setChecked(True)
 
         layout.addWidget(self.nav_houzz)
         layout.addWidget(self.nav_bbb)
         layout.addWidget(self.nav_data)
         layout.addWidget(self.nav_outreach)
-        layout.addWidget(self.nav_billing)
         layout.addSpacing(15)
 
         config_label = QLabel("CONFIGURATION")
         config_label.setObjectName("Muted")
         layout.addWidget(config_label)
-
-        layout.addWidget(QLabel("Device ID:"))
-        self.device_id_input = self._line_edit("Automatic")
-        self.device_id_input.setReadOnly(True)
-        layout.addWidget(self.device_id_input)
 
         layout.addWidget(QLabel("Target Pages:"))
         self.max_pages_input = self._line_edit("Optional")
@@ -236,13 +221,6 @@ class QtDashboardWindow(QMainWindow):
             layout.addWidget(check)
 
         layout.addStretch(1)
-
-        # Billing Quick View
-        self.sidebar_billing_label = QLabel("Est. Bill: 0.00 PKR")
-        self.sidebar_billing_label.setObjectName("Muted")
-        self.sidebar_billing_label.setStyleSheet("font-weight: bold; color: #34b978;")
-        layout.addWidget(self.sidebar_billing_label)
-        layout.addSpacing(5)
 
         # System Status
         self.status_dot = QLabel("●  Idle")
@@ -279,12 +257,9 @@ class QtDashboardWindow(QMainWindow):
         elif view == "data":
             self.nav_data.setChecked(True)
             self.content_stack.setCurrentIndex(1)
-        elif view == "billing":
-            self.nav_billing.setChecked(True)
-            self.content_stack.setCurrentIndex(2)
         elif view == "outreach":
             self.nav_outreach.setChecked(True)
-            self.content_stack.setCurrentIndex(3)
+            self.content_stack.setCurrentIndex(2)
             self._seed_outreach_contact_file()
 
         self._refresh_dashboard()
@@ -434,39 +409,6 @@ class QtDashboardWindow(QMainWindow):
         self.outreach_report_console.setObjectName("DataConsole")
         self.outreach_report_console.setMinimumHeight(190)
         layout.addWidget(self.outreach_report_console, 1)
-
-        return page
-
-    def _build_billing_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(25, 25, 25, 25)
-        layout.setSpacing(20)
-
-        header = QLabel("My Billing & Usage")
-        header.setObjectName("PageTitle")
-        layout.addWidget(header)
-
-        self.billing_card_container = QWidget()
-        self.billing_grid = QGridLayout(self.billing_card_container)
-
-        self.bill_emails_card = MetricCard("Total Emails", "#34b978")
-        self.bill_pkr_card = MetricCard("Bill (PKR)", "#d7a13f")
-        self.bill_usd_card = MetricCard("Bill (USD)", "#6aa6ff")
-        self.bill_sessions_card = MetricCard("Total Sessions", "#e16666")
-
-        self.billing_grid.addWidget(self.bill_emails_card, 0, 0)
-        self.billing_grid.addWidget(self.bill_pkr_card, 0, 1)
-        self.billing_grid.addWidget(self.bill_usd_card, 1, 0)
-        self.billing_grid.addWidget(self.bill_sessions_card, 1, 1)
-
-        self.billing_card_container.setMinimumHeight(160)
-        layout.addWidget(self.billing_card_container)
-
-        details = QLabel("Note: Billing is calculated at 0.5 PKR per email fetched.")
-        details.setObjectName("Muted")
-        layout.addWidget(details)
-        layout.addStretch()
 
         return page
 
@@ -667,17 +609,6 @@ class QtDashboardWindow(QMainWindow):
         self._apply_runtime(self.runtime_snapshot)
         self._apply_summary(self.summary_snapshot)
         self._update_status(state)
-        self._update_billing_ui()
-
-    def _update_billing_ui(self) -> None:
-        bill = self.service.get_billing_info(self.current_device_id())
-        self.sidebar_billing_label.setText(f"Est. Bill: {bill['pkr']:.2f} PKR")
-
-        if self.content_stack.currentIndex() == 2:  # Billing page
-            self.bill_emails_card.set_metric(bill["emails"])
-            self.bill_pkr_card.set_metric(f"{bill['pkr']:.2f}")
-            self.bill_usd_card.set_metric(f"${bill['usd']:.2f}")
-            self.bill_sessions_card.set_metric(bill["sessions"])
 
     def _drain_service_events(self) -> None:
         for event in self.service.drain_events():
@@ -806,7 +737,6 @@ class QtDashboardWindow(QMainWindow):
         return ScraperRunConfig(
             url=self.target_url_input.text().strip(),
             source=self.current_source(),
-            access_identity=self.current_device_id(),
             max_pages=safe_int(self.max_pages_input.text()),
             max_profiles=safe_int(self.max_profiles_input.text()),
             headless=self.headless_check.isChecked(),
@@ -973,8 +903,7 @@ class QtDashboardWindow(QMainWindow):
                 QMessageBox.warning(
                     self,
                     "Could Not Start",
-                    "Access may be pending, blocked, or DB may be unreachable. "
-                    "Check the activity feed.",
+                    "Another task may already be running. Check the activity feed.",
                 )
 
     def _on_stop_click(self) -> None:
@@ -999,13 +928,12 @@ class QtDashboardWindow(QMainWindow):
             )
 
     def _on_export_click(self) -> None:
-        device_id = self.current_device_id()
         quality_filter = ("high",) if self.email_only_check.isChecked() else ("high", "medium")
-        if not self.service.start_export(self.current_source(), quality_filter, device_id):
+        if not self.service.start_export(self.current_source(), quality_filter):
             QMessageBox.warning(
                 self,
                 "Export Blocked",
-                "Access may be pending, blocked, or DB may be unreachable.",
+                "Another task may already be running.",
             )
 
     def _on_open_directory(self) -> None:
@@ -1034,10 +962,6 @@ class QtDashboardWindow(QMainWindow):
     def current_source(self) -> str:
         """Return the currently selected scraper source."""
         return "bbb" if self.source_combo.currentText().lower() == "bbb" else "houzz"
-
-    def current_device_id(self) -> str:
-        """Return the automatic device identity used for admin approval."""
-        return self.device_id_input.text().strip().upper() or get_device_id()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1081,7 +1005,6 @@ class QtDashboardWindow(QMainWindow):
         self._current_cols = columns
 
     def _seed_defaults(self) -> None:
-        self.device_id_input.setText(get_device_id())
         self.log_console.clear()
         self.summary_snapshot = build_source_summary(self.current_source()).as_dict()
         self._seed_outreach_contact_file()

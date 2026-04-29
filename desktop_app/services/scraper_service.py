@@ -24,9 +24,7 @@ from desktop_app.services.outreach_service import (
 )
 from houzz_pro_scraper import export_final_for_source, run_scraper
 from scraper.config import PROJECT_ROOT
-from scraper.identity import get_device_id
 from scraper.runtime import ScraperRuntimeController
-from scraper.storage.mongodb_storage import db_manager
 
 SCRAPER_TASK_ERRORS = (csv.Error, OSError, PlaywrightError, RuntimeError, ValueError)
 EXPORT_TASK_ERRORS = (csv.Error, OSError, RuntimeError, ValueError)
@@ -76,11 +74,8 @@ class ScraperDashboardService:
                 {"snapshot": snapshot.as_dict()},
             ),
         )
-        self._runtime.service = self
         self._mode = "idle"
         self._pending_restart: ScraperRunConfig | None = None
-        self._activity_id = None
-        self._access_identity = ""
         self._outreach = EmailOutreachService()
 
     def _emit(self, event_type, payload=None):
@@ -105,7 +100,6 @@ class ScraperDashboardService:
                 "busy": self._thread is not None,
                 "runtime": runtime_snapshot,
                 "restart_queued": self._pending_restart is not None,
-                "access_identity": self._access_identity,
             }
 
     def refresh_summary(self, source):
@@ -117,23 +111,6 @@ class ScraperDashboardService:
         with self._lock:
             if self._thread is not None:
                 return False
-            self._access_identity = (
-                get_device_id() if not config.access_identity else config.access_identity
-            )
-            access = db_manager.request_access(
-                self._access_identity,
-                config.source,
-                config.url,
-            )
-            if not access.get("allowed"):
-                status = access.get("status", "unknown")
-                message = access.get("message", "Access is not approved.")
-                self._emit_log(f"[SYSTEM] Access {status}: {message}")
-                self._emit(
-                    "task",
-                    {"mode": "scrape", "status": "failed", "error": message},
-                )
-                return False
 
             self._runtime.start_run(
                 config.source,
@@ -142,14 +119,6 @@ class ScraperDashboardService:
                 max_profiles=config.max_profiles,
             )
             self._mode = "scrape"
-
-            # Start MongoDB tracking
-            db_manager.connect()
-            self._activity_id = db_manager.track_start(
-                config.source,
-                config.url,
-                license_key=self._access_identity,
-            )
 
             self._thread = threading.Thread(
                 target=self._run_scrape_task,
@@ -207,26 +176,10 @@ class ScraperDashboardService:
                     out_filename=config.out_filename,
                     logger=runtime.log,
                     runtime=runtime,
-                    access_identity=self._access_identity,
-                    access_prechecked=True,
-                    track_activity=False,
                 )
             )
-            # Finalize activity in DB
-            if self._activity_id:
-                snap = self._runtime.snapshot() if self._runtime else None
-                emails_count = snap.master_saved if snap else 0
-                db_manager.update_activity(self._activity_id, emails_count, status="completed")
         except SCRAPER_TASK_ERRORS as exc:
             self._emit_log(f"[ERROR] {exc}")
-            if self._activity_id:
-                snap = self._runtime.snapshot() if self._runtime else None
-                emails_count = snap.master_saved if snap else 0
-                db_manager.update_activity(
-                    self._activity_id,
-                    emails_count,
-                    status=f"failed: {exc}",
-                )
             if self._runtime:
                 self._runtime.complete_run(error_message=str(exc))
         finally:
@@ -238,7 +191,6 @@ class ScraperDashboardService:
                 self._mode = "idle"
                 # Keep runtime but signal completion
                 self._runtime.complete_run()
-                self._activity_id = None
                 pending_restart = self._pending_restart
                 self._pending_restart = None
 
@@ -248,24 +200,9 @@ class ScraperDashboardService:
                 self._emit_log("[SYSTEM] Restarting scraper with current panel settings...")
                 self.start_run(pending_restart)
 
-    def start_export(self, source, quality_filter, access_identity=""):
+    def start_export(self, source, quality_filter):
         with self._lock:
             if self._thread is not None:
-                return False
-            self._access_identity = access_identity or self._access_identity or get_device_id()
-            access = db_manager.request_access(
-                self._access_identity,
-                source,
-                "export_final_only",
-            )
-            if not access.get("allowed"):
-                status = access.get("status", "unknown")
-                message = access.get("message", "Access is not approved.")
-                self._emit_log(f"[SYSTEM] Access {status}: {message}")
-                self._emit(
-                    "task",
-                    {"mode": "export", "status": "failed", "error": message},
-                )
                 return False
             self._mode = "export"
             self._thread = threading.Thread(
@@ -284,8 +221,6 @@ class ScraperDashboardService:
                 source,
                 quality_filter=quality_filter,
                 logger=self._emit_log,
-                access_identity=self._access_identity,
-                access_prechecked=True,
             )
             self._emit("export", {"result": export_result, "source": source})
         except EXPORT_TASK_ERRORS as exc:
@@ -440,23 +375,3 @@ class ScraperDashboardService:
 
     def open_system_path(self, path):
         open_path(path)
-
-    def record_profile_result(self, _profile_url, _result):
-        """Called by runtime to sync progress to DB."""
-        if self._activity_id and self._runtime:
-            snap = self._runtime.snapshot()
-            db_manager.update_activity(self._activity_id, snap.master_saved)
-
-    def get_billing_info(self, access_identity=""):
-        """Calculate bills: 0.5 PKR per email."""
-        clean_license = access_identity or self._access_identity or get_device_id()
-        stats = db_manager.get_user_stats(clean_license)
-        emails = stats.get("total_emails", 0)
-        pkr = emails * 0.5
-        usd = pkr / 280.0  # Approx rate
-        return {
-            "emails": emails,
-            "pkr": pkr,
-            "usd": usd,
-            "sessions": stats.get("total_sessions", 0),
-        }
