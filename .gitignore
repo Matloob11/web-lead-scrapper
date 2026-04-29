@@ -2,6 +2,9 @@
 __pycache__/
 **/__pycache__/
 runtime/user_data/
+runtime/outreach/
+runtime/email_accounts.json
+*.env
 *.pyc
 houzz_emails.csv
 bbb_emails.csv

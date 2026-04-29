@@ -30,6 +30,30 @@ class ScraperRunConfig:
 
 
 @dataclass(frozen=True)
+class OutreachRunConfig:
+    """Settings collected from the dashboard before starting an outreach run."""
+
+    contact_file: str = ""
+    campaign_id: str = ""
+    subject_a: str = ""
+    subject_b: str = ""
+    body: str = ""
+    company_name: str = ""
+    physical_address: str = ""
+    unsubscribe_url: str = ""
+    sender_name: str = ""
+    dry_run: bool = True
+    confirm_permission: bool = False
+    session_limit: int = 25
+    min_delay_seconds: float = 60.0
+    max_delay_seconds: float = 180.0
+
+    def as_dict(self):
+        """Return a plain dictionary form of the config."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class SourceDashboardSummary:
     """Aggregated source-level counts displayed by the dashboard."""
 

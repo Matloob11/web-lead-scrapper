@@ -3,24 +3,34 @@
 import asyncio
 import csv
 import queue
+import smtplib
 import threading
 from typing import Any
 
 from playwright.async_api import Error as PlaywrightError
 
-from desktop_app.models import ScraperRunConfig
+from desktop_app.models import OutreachRunConfig, ScraperRunConfig
 from desktop_app.services.file_service import (
     build_source_summary,
     open_path,
     reset_source_outputs,
 )
+from desktop_app.services.outreach_service import (
+    CampaignConfig,
+    EmailOutreachService,
+    SMTPSettings,
+    load_contacts_from_csv,
+    validate_contact_source_path,
+)
 from houzz_pro_scraper import export_final_for_source, run_scraper
+from scraper.config import PROJECT_ROOT
 from scraper.identity import get_device_id
 from scraper.runtime import ScraperRuntimeController
 from scraper.storage.mongodb_storage import db_manager
 
 SCRAPER_TASK_ERRORS = (csv.Error, OSError, PlaywrightError, RuntimeError, ValueError)
 EXPORT_TASK_ERRORS = (csv.Error, OSError, RuntimeError, ValueError)
+OUTREACH_TASK_ERRORS = (csv.Error, OSError, RuntimeError, ValueError, smtplib.SMTPException)
 
 
 def build_effective_run_options(config: ScraperRunConfig) -> dict[str, Any]:
@@ -31,6 +41,25 @@ def build_effective_run_options(config: ScraperRunConfig) -> dict[str, Any]:
         "skip_google_fallback": config.skip_google_fallback or skip_slow_fallbacks,
         "quality_filter": ("high",) if config.email_only else config.quality_filter,
     }
+
+
+def build_campaign_config(config: OutreachRunConfig) -> CampaignConfig:
+    """Return outreach campaign settings for the backend service."""
+    return CampaignConfig(
+        campaign_id=config.campaign_id.strip(),
+        subject_a=config.subject_a.strip(),
+        subject_b=config.subject_b.strip(),
+        body=config.body.strip(),
+        company_name=config.company_name.strip(),
+        physical_address=config.physical_address.strip(),
+        unsubscribe_url=config.unsubscribe_url.strip(),
+        sender_name=config.sender_name.strip(),
+        dry_run=config.dry_run,
+        allow_manual_permission_override=config.confirm_permission,
+        session_limit=config.session_limit,
+        min_delay_seconds=config.min_delay_seconds,
+        max_delay_seconds=config.max_delay_seconds,
+    )
 
 
 class ScraperDashboardService:
@@ -52,6 +81,7 @@ class ScraperDashboardService:
         self._pending_restart: ScraperRunConfig | None = None
         self._activity_id = None
         self._access_identity = ""
+        self._outreach = EmailOutreachService()
 
     def _emit(self, event_type, payload=None):
         self._events.put({"type": event_type, "payload": payload or {}})
@@ -266,6 +296,102 @@ class ScraperDashboardService:
                 self._thread = None
                 self._mode = "idle"
             self._emit("task", {"mode": "export", "status": "finished", "source": source})
+
+    def analyze_outreach(self, config: OutreachRunConfig):
+        """Load contacts and return a dry-run outreach plan."""
+        validate_contact_source_path(config.contact_file, project_root=PROJECT_ROOT)
+        contacts = load_contacts_from_csv(config.contact_file)
+        campaign = build_campaign_config(config)
+        plan = self._outreach.plan_campaign(contacts, campaign)
+        self._emit(
+            "outreach",
+            {
+                "status": "analyzed",
+                "summary": plan.summary,
+                "decisions": [decision.__dict__ for decision in plan.decisions],
+            },
+        )
+        return plan
+
+    def start_outreach(self, config: OutreachRunConfig):
+        """Start an outreach campaign in the background."""
+        try:
+            validate_contact_source_path(config.contact_file, project_root=PROJECT_ROOT)
+        except OUTREACH_TASK_ERRORS as exc:
+            self._emit_log(f"[ERROR] Outreach failed: {exc}")
+            self._emit(
+                "outreach",
+                {
+                    "status": "failed",
+                    "error": str(exc),
+                    "summary": {},
+                    "decisions": [],
+                },
+            )
+            return False
+
+        with self._lock:
+            if self._thread is not None:
+                return False
+            self._mode = "outreach"
+            self._thread = threading.Thread(
+                target=self._run_outreach_task,
+                args=(config,),
+                daemon=True,
+            )
+            self._thread.start()
+
+        self._emit("task", {"mode": "outreach", "status": "started"})
+        return True
+
+    def _run_outreach_task(self, config: OutreachRunConfig):
+        try:
+            validate_contact_source_path(config.contact_file, project_root=PROJECT_ROOT)
+            contacts = load_contacts_from_csv(config.contact_file)
+            campaign = build_campaign_config(config)
+            smtp_settings = None if campaign.dry_run else SMTPSettings.from_env()
+            self._emit_log(
+                "[OUTREACH] "
+                f"Campaign={campaign.campaign_id}; contacts={len(contacts)}; "
+                f"mode={'dry-run' if campaign.dry_run else 'send'}; "
+                f"session_limit={campaign.session_limit}; "
+                f"delay={campaign.min_delay_seconds:.0f}-{campaign.max_delay_seconds:.0f}s"
+            )
+            plan = self._outreach.send_campaign(
+                contacts,
+                campaign,
+                smtp_settings=smtp_settings,
+                logger=self._emit_log,
+            )
+            self._emit(
+                "outreach",
+                {
+                    "status": "finished",
+                    "summary": plan.summary,
+                    "decisions": [decision.__dict__ for decision in plan.decisions],
+                },
+            )
+            self._emit_log(f"[OUTREACH] Finished. Summary: {plan.summary}")
+        except OUTREACH_TASK_ERRORS as exc:
+            self._emit_log(f"[ERROR] Outreach failed: {exc}")
+            self._emit(
+                "outreach",
+                {
+                    "status": "failed",
+                    "error": str(exc),
+                    "summary": {},
+                    "decisions": [],
+                },
+            )
+        finally:
+            with self._lock:
+                self._thread = None
+                self._mode = "idle"
+            self._emit("task", {"mode": "outreach", "status": "finished"})
+
+    def get_outreach_analytics(self, campaign_id: str):
+        """Return local analytics for an outreach campaign."""
+        return self._outreach.analytics_summary(campaign_id)
 
     def pause_run(self):
         with self._lock:

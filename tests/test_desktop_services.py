@@ -7,10 +7,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from desktop_app.models import ScraperRunConfig
+from desktop_app.models import OutreachRunConfig, ScraperRunConfig
 from desktop_app.services.file_service import build_source_summary, reset_source_outputs
 from desktop_app.services.scraper_service import (
     ScraperDashboardService,
+    build_campaign_config,
     build_effective_run_options,
 )
 from desktop_app.view_models import safe_int, summary_file_paths
@@ -196,6 +197,94 @@ class DesktopServiceTests(unittest.TestCase):
         self.assertTrue(options["skip_facebook"])
         self.assertTrue(options["skip_google_fallback"])
         self.assertEqual(options["quality_filter"], ("high",))
+
+    def test_build_campaign_config_maps_dashboard_outreach_settings(self):
+        campaign = build_campaign_config(
+            OutreachRunConfig(
+                contact_file="final/houzz_high_quality_emails.csv",
+                campaign_id="spring-remodel",
+                subject_a="Planning a remodel in {city}?",
+                subject_b="Need a construction estimate in {city}?",
+                body="Hi {name}, we help with {project_type}.",
+                company_name="Matloob Construction",
+                physical_address="123 Main St, Dallas, TX",
+                unsubscribe_url="https://example.com/unsubscribe",
+                dry_run=False,
+                confirm_permission=True,
+                session_limit=12,
+                min_delay_seconds=5,
+                max_delay_seconds=20,
+            )
+        )
+
+        self.assertEqual(campaign.campaign_id, "spring-remodel")
+        self.assertEqual(campaign.subject_b, "Need a construction estimate in {city}?")
+        self.assertFalse(campaign.dry_run)
+        self.assertTrue(campaign.allow_manual_permission_override)
+        self.assertEqual(campaign.session_limit, 12)
+        self.assertEqual(campaign.min_delay_seconds, 5)
+        self.assertEqual(campaign.max_delay_seconds, 20)
+
+    def test_analyze_outreach_rejects_non_contact_csv_paths(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            log_dir = root / "output" / "logs"
+            log_dir.mkdir(parents=True)
+            log_file = log_dir / "houzz_scrape_failures.csv"
+            log_file.write_text("Email\nowner@examplebuilder.com\n", encoding="utf-8")
+
+            service = ScraperDashboardService()
+            config = OutreachRunConfig(
+                contact_file=str(log_file),
+                campaign_id="spring-remodel",
+                subject_a="Planning a remodel?",
+                body="Hi {name}, we help with projects.",
+                company_name="Matloob Construction",
+                physical_address="123 Main St, Dallas, TX",
+                unsubscribe_url="https://example.com/unsubscribe",
+                dry_run=True,
+                confirm_permission=True,
+            )
+
+            with (
+                patch(
+                    "desktop_app.services.scraper_service.PROJECT_ROOT",
+                    root,
+                ),
+                self.assertRaises(ValueError),
+            ):
+                service.analyze_outreach(config)
+
+    def test_start_outreach_rejects_non_contact_csv_before_thread_start(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            log_dir = root / "output" / "logs"
+            log_dir.mkdir(parents=True)
+            log_file = log_dir / "houzz_scrape_failures.csv"
+            log_file.write_text("Email\nowner@examplebuilder.com\n", encoding="utf-8")
+
+            service = ScraperDashboardService()
+            config = OutreachRunConfig(
+                contact_file=str(log_file),
+                campaign_id="spring-remodel",
+                subject_a="Planning a remodel?",
+                body="Hi {name}, we help with projects.",
+                company_name="Matloob Construction",
+                physical_address="123 Main St, Dallas, TX",
+                unsubscribe_url="https://example.com/unsubscribe",
+                dry_run=True,
+                confirm_permission=True,
+            )
+
+            with patch("desktop_app.services.scraper_service.PROJECT_ROOT", root):
+                started = service.start_outreach(config)
+
+            self.assertFalse(started)
+            state = service.get_state()
+            self.assertFalse(state["busy"])
+            events = service.drain_events()
+
+        self.assertTrue(any(event["type"] == "outreach" for event in events))
 
     def test_dashboard_service_uses_auto_device_id_without_user_license(self):
         service = ScraperDashboardService()

@@ -14,6 +14,10 @@ Desktop dashboard:
 .\.venv\Scripts\python.exe gui_app.py
 ```
 
+The dashboard also includes a compliant Email Outreach page for dry-run analysis,
+template preview, suppression/sent-ledger checks, and SMTP sending through
+environment variables. See `docs/email_outreach.md`.
+
 Or run a source directly:
 
 ```powershell
@@ -87,6 +91,17 @@ real credentials into the codebase:
 
 ```powershell
 $env:MATLOOB_MONGO_URI="<your MongoDB connection URI>"
+```
+
+Email outreach credentials must also stay out of source code:
+
+```powershell
+$env:MATLOOB_SMTP_HOST="smtp.gmail.com"
+$env:MATLOOB_SMTP_PORT="587"
+$env:MATLOOB_SMTP_USERNAME="sender@yourdomain.com"
+$env:MATLOOB_SMTP_PASSWORD="<app password or SMTP password>"
+$env:MATLOOB_FROM_EMAIL="sender@yourdomain.com"
+$env:MATLOOB_FROM_NAME="Matloob Construction"
 ```
 
 Manual browser/VPN setup:

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import csv
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -31,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from desktop_app.models import ScraperRunConfig
+from desktop_app.models import OutreachRunConfig, ScraperRunConfig
 from desktop_app.qt_ui.components import MetricCard, Section
 from desktop_app.qt_ui.theme import APP_STYLE, COLORS
 from desktop_app.services.file_service import build_source_summary
@@ -52,6 +54,17 @@ MAX_WIDGET_SIZE = 16777215
 SHELL_STACK_BREAKPOINT = 940
 WORKSPACE_STACK_BREAKPOINT = 650
 METRIC_ORDER = ("checked", "active", "processed", "no_email", "failed", "emails")
+OUTREACH_DEFAULT_BODY = """Hi {name},
+
+I noticed you may have construction or remodeling needs in {city}. We are a registered
+construction company and can help with estimates, planning, and reliable crew scheduling
+for {project_type} work.
+
+Would it be useful if I sent a short estimate checklist?
+
+Thanks,
+{company_name}
+"""
 
 
 class QtDashboardWindow(QMainWindow):
@@ -131,6 +144,10 @@ class QtDashboardWindow(QMainWindow):
         self.billing_page = self._build_billing_page()
         self.content_stack.addWidget(self.billing_page)
 
+        # Page 3: Email Outreach
+        self.outreach_page = self._build_outreach_page()
+        self.content_stack.addWidget(self.outreach_page)
+
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
@@ -157,6 +174,9 @@ class QtDashboardWindow(QMainWindow):
         self.nav_data = self._nav_button(
             "Data Center", QStyle.StandardPixmap.SP_DirHomeIcon, "data"
         )
+        self.nav_outreach = self._nav_button(
+            "Email Outreach", QStyle.StandardPixmap.SP_FileDialogInfoView, "outreach"
+        )
         self.nav_billing = self._nav_button(
             "My Billing", QStyle.StandardPixmap.SP_FileDialogDetailedView, "billing"
         )
@@ -165,12 +185,14 @@ class QtDashboardWindow(QMainWindow):
         self.nav_group.addButton(self.nav_houzz)
         self.nav_group.addButton(self.nav_bbb)
         self.nav_group.addButton(self.nav_data)
+        self.nav_group.addButton(self.nav_outreach)
         self.nav_group.addButton(self.nav_billing)
         self.nav_houzz.setChecked(True)
 
         layout.addWidget(self.nav_houzz)
         layout.addWidget(self.nav_bbb)
         layout.addWidget(self.nav_data)
+        layout.addWidget(self.nav_outreach)
         layout.addWidget(self.nav_billing)
         layout.addSpacing(15)
 
@@ -260,6 +282,10 @@ class QtDashboardWindow(QMainWindow):
         elif view == "billing":
             self.nav_billing.setChecked(True)
             self.content_stack.setCurrentIndex(2)
+        elif view == "outreach":
+            self.nav_outreach.setChecked(True)
+            self.content_stack.setCurrentIndex(3)
+            self._seed_outreach_contact_file()
 
         self._refresh_dashboard()
 
@@ -296,6 +322,118 @@ class QtDashboardWindow(QMainWindow):
         btn_row.addWidget(self.refresh_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
+
+        return page
+
+    def _build_outreach_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(16)
+
+        header = QLabel("Email Outreach")
+        header.setObjectName("PageTitle")
+        layout.addWidget(header)
+
+        form = QFrame()
+        form.setObjectName("InputSection")
+        grid = QGridLayout(form)
+        grid.setContentsMargins(14, 14, 14, 14)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(10)
+
+        self.outreach_contact_file_input = self._line_edit("final/houzz_high_quality_emails.csv")
+        self.outreach_contact_file_input.setObjectName("TargetUrlInput")
+        browse_btn = QPushButton("Browse")
+        browse_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        browse_btn.clicked.connect(self._on_browse_outreach_contacts)
+
+        contact_row = QHBoxLayout()
+        contact_row.setContentsMargins(0, 0, 0, 0)
+        contact_row.setSpacing(8)
+        contact_row.addWidget(self.outreach_contact_file_input, 1)
+        contact_row.addWidget(browse_btn)
+
+        self.outreach_campaign_id_input = self._line_edit("construction-outreach")
+        self.outreach_company_input = self._line_edit("Company name")
+        self.outreach_sender_name_input = self._line_edit("Sender display name")
+        self.outreach_address_input = self._line_edit("Physical postal address")
+        self.outreach_unsubscribe_input = self._line_edit("https://yourdomain.com/unsubscribe")
+        self.outreach_subject_a_input = self._line_edit("Planning a remodel in {city}?")
+        self.outreach_subject_b_input = self._line_edit("Need a construction estimate in {city}?")
+
+        self.outreach_body_input = QPlainTextEdit()
+        self.outreach_body_input.setObjectName("LogConsole")
+        self.outreach_body_input.setMinimumHeight(170)
+        self.outreach_body_input.setPlainText(OUTREACH_DEFAULT_BODY)
+
+        fields: list[tuple[str, QWidget | QHBoxLayout]] = [
+            ("Contacts CSV", contact_row),
+            ("Campaign ID", self.outreach_campaign_id_input),
+            ("Company", self.outreach_company_input),
+            ("Sender", self.outreach_sender_name_input),
+            ("Address", self.outreach_address_input),
+            ("Unsubscribe URL", self.outreach_unsubscribe_input),
+            ("Subject A", self.outreach_subject_a_input),
+            ("Subject B", self.outreach_subject_b_input),
+        ]
+        for row_index, (label_text, widget_or_layout) in enumerate(fields):
+            label = QLabel(label_text)
+            label.setObjectName("InputLabel")
+            grid.addWidget(label, row_index, 0)
+            if isinstance(widget_or_layout, QHBoxLayout):
+                grid.addLayout(widget_or_layout, row_index, 1)
+            else:
+                grid.addWidget(widget_or_layout, row_index, 1)
+
+        body_row = len(fields)
+        body_label = QLabel("Body")
+        body_label.setObjectName("InputLabel")
+        body_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        grid.addWidget(body_label, body_row, 0)
+        grid.addWidget(self.outreach_body_input, body_row, 1)
+        grid.setColumnMinimumWidth(0, 130)
+        grid.setColumnStretch(1, 1)
+        layout.addWidget(form)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(10)
+        self.outreach_dry_run_check = QCheckBox("Dry Run")
+        self.outreach_dry_run_check.setChecked(True)
+        self.outreach_permission_check = QCheckBox("Permission Confirmed")
+        self.outreach_session_limit_input = self._line_edit("25")
+        self.outreach_min_delay_input = self._line_edit("60")
+        self.outreach_max_delay_input = self._line_edit("180")
+        controls.addWidget(self.outreach_dry_run_check)
+        controls.addWidget(self.outreach_permission_check)
+        controls.addWidget(QLabel("Session Limit"))
+        controls.addWidget(self.outreach_session_limit_input)
+        controls.addWidget(QLabel("Delay Min"))
+        controls.addWidget(self.outreach_min_delay_input)
+        controls.addWidget(QLabel("Delay Max"))
+        controls.addWidget(self.outreach_max_delay_input)
+        layout.addLayout(controls)
+
+        action_row = QHBoxLayout()
+        self.outreach_analyze_btn = QPushButton("Analyze")
+        self.outreach_analyze_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
+        )
+        self.outreach_analyze_btn.clicked.connect(self._on_analyze_outreach_click)
+        self.outreach_send_btn = QPushButton("Start Outreach")
+        self.outreach_send_btn.setObjectName("PrimaryButton")
+        self.outreach_send_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.outreach_send_btn.clicked.connect(self._on_send_outreach_click)
+        action_row.addWidget(self.outreach_analyze_btn)
+        action_row.addWidget(self.outreach_send_btn)
+        action_row.addStretch()
+        layout.addLayout(action_row)
+
+        self.outreach_report_console = QPlainTextEdit()
+        self.outreach_report_console.setReadOnly(True)
+        self.outreach_report_console.setObjectName("DataConsole")
+        self.outreach_report_console.setMinimumHeight(190)
+        layout.addWidget(self.outreach_report_console, 1)
 
         return page
 
@@ -555,6 +693,8 @@ class QtDashboardWindow(QMainWindow):
                 snapshot = payload.get("snapshot")
                 if isinstance(snapshot, dict):
                     self.runtime_snapshot = snapshot
+            elif event_type == "outreach":
+                self._append_outreach_report(payload)
 
     def _apply_runtime(self, runtime: RuntimeSnapshotDict | None) -> None:
         if not runtime:
@@ -627,7 +767,12 @@ class QtDashboardWindow(QMainWindow):
             run_state = str(self.runtime_snapshot.get("run_state", ""))
 
         if is_busy:
-            status_label = "Paused" if run_state == "paused" else "Extracting..."
+            if mode == "outreach":
+                status_label = "Outreach..."
+            elif mode == "export":
+                status_label = "Exporting..."
+            else:
+                status_label = "Paused" if run_state == "paused" else "Extracting..."
             self.status_dot.setText(f"●  {status_label}")
             self.status_dot.setObjectName("StatusBusy")
         else:
@@ -641,6 +786,9 @@ class QtDashboardWindow(QMainWindow):
         self.resume_btn.setEnabled(is_scrape and run_state == "paused")
         self.restart_btn.setEnabled(mode != "export")
         self.export_btn.setEnabled(not is_busy)
+        if hasattr(self, "outreach_analyze_btn"):
+            self.outreach_analyze_btn.setEnabled(not is_busy)
+            self.outreach_send_btn.setEnabled(not is_busy)
         self.status_dot.setStyle(self.status_dot.style())
 
     def _current_output_filename(self) -> str:
@@ -670,6 +818,145 @@ class QtDashboardWindow(QMainWindow):
             fresh_start=self.fresh_start_check.isChecked(),
             out_filename=self._current_output_filename(),
         )
+
+    def _seed_outreach_contact_file(self) -> None:
+        if not hasattr(self, "outreach_contact_file_input"):
+            return
+        current_text = self.outreach_contact_file_input.text().strip()
+        if current_text:
+            return
+        summary: SummarySnapshotDict = self.summary_snapshot or build_source_summary(
+            self.current_source()
+        ).as_dict()
+        files = summary.get("files", {}) if isinstance(summary, dict) else {}
+        final_file = str(files.get("final_output_file", "")).strip()
+        if final_file:
+            self.outreach_contact_file_input.setText(final_file)
+
+    def _build_outreach_config(self, force_send: bool = False) -> OutreachRunConfig:
+        return OutreachRunConfig(
+            contact_file=self.outreach_contact_file_input.text().strip(),
+            campaign_id=self.outreach_campaign_id_input.text().strip(),
+            subject_a=self.outreach_subject_a_input.text().strip(),
+            subject_b=self.outreach_subject_b_input.text().strip(),
+            body=self.outreach_body_input.toPlainText().strip(),
+            company_name=self.outreach_company_input.text().strip(),
+            physical_address=self.outreach_address_input.text().strip(),
+            unsubscribe_url=self.outreach_unsubscribe_input.text().strip(),
+            sender_name=self.outreach_sender_name_input.text().strip(),
+            dry_run=self.outreach_dry_run_check.isChecked() and not force_send,
+            confirm_permission=self.outreach_permission_check.isChecked(),
+            session_limit=safe_int(self.outreach_session_limit_input.text()) or 25,
+            min_delay_seconds=self._safe_float(self.outreach_min_delay_input.text(), 60.0),
+            max_delay_seconds=self._safe_float(self.outreach_max_delay_input.text(), 180.0),
+        )
+
+    def _safe_float(self, raw_value: str, default: float) -> float:
+        try:
+            value = float((raw_value or "").strip())
+        except ValueError:
+            return default
+        return value if value >= 0 else default
+
+    def _on_browse_outreach_contacts(self) -> None:
+        start_dir = str(PROJECT_ROOT / "final")
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Select Contacts CSV",
+            start_dir,
+            "CSV Files (*.csv);;All Files (*)",
+        )
+        if path:
+            self.outreach_contact_file_input.setText(path)
+
+    def _on_analyze_outreach_click(self) -> None:
+        config = self._build_outreach_config()
+        if not config.contact_file:
+            QMessageBox.information(self, "Missing Contacts", "Please select a contacts CSV.")
+            return
+        try:
+            plan = self.service.analyze_outreach(config)
+        except (OSError, ValueError, csv.Error) as exc:
+            QMessageBox.critical(self, "Analyze Failed", str(exc))
+            return
+        self.outreach_report_console.setPlainText(
+            self._format_outreach_plan(plan.summary, plan.decisions)
+        )
+
+    def _on_send_outreach_click(self) -> None:
+        config = self._build_outreach_config()
+        if not config.contact_file:
+            QMessageBox.information(self, "Missing Contacts", "Please select a contacts CSV.")
+            return
+        if not config.dry_run:
+            response = QMessageBox.question(
+                self,
+                "Start Outreach",
+                (
+                    "This will send only eligible contacts and block invalid, duplicate, "
+                    "suppressed, high-risk, or unconfirmed contacts. Continue?"
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if response != QMessageBox.StandardButton.Yes:
+                return
+        if not self.service.start_outreach(config):
+            QMessageBox.warning(
+                self,
+                "Could Not Start",
+                "Outreach may be blocked by contact file validation or another running task.",
+            )
+            return
+        self.outreach_report_console.setPlainText("Outreach task started. Watch the activity feed.")
+
+    def _append_outreach_report(self, payload: dict[str, Any]) -> None:
+        summary = payload.get("summary", {})
+        decisions = payload.get("decisions", [])
+        if not isinstance(summary, dict):
+            summary = {}
+        if not isinstance(decisions, list):
+            decisions = []
+        report = self._format_outreach_summary(summary, decisions)
+        if payload.get("error"):
+            report = f"ERROR: {payload.get('error')}\n\n{report}"
+        self.outreach_report_console.setPlainText(report)
+
+    def _format_outreach_plan(self, summary: dict[str, int], decisions: Any) -> str:
+        decision_rows = [decision.__dict__ for decision in decisions]
+        return self._format_outreach_summary(summary, decision_rows)
+
+    def _format_outreach_summary(self, summary: dict[str, int], decisions: list[Any]) -> str:
+        lines = [
+            "OUTREACH AUDIT",
+            "-" * 40,
+            f"Total: {summary.get('total', 0)}",
+            f"Sent: {summary.get('sent', 0)}",
+            f"Dry run ready: {summary.get('dry_run', 0)}",
+            f"Queued: {summary.get('queued', 0)}",
+            f"Missing permission: {summary.get('missing_permission', 0)}",
+            f"Suppressed: {summary.get('suppressed', 0)}",
+            f"Already sent: {summary.get('already_sent', 0)}",
+            f"Duplicate in file: {summary.get('duplicate_input', 0)}",
+            f"Invalid: {summary.get('invalid', 0)}",
+            f"Risk blocked: {summary.get('risk_blocked', 0)}",
+            f"Compliance blocked: {summary.get('compliance_blocked', 0)}",
+            f"Failed: {summary.get('failed', 0)}",
+            f"Session limit: {summary.get('session_limit', 0)}",
+            "-" * 40,
+            "RECIPIENTS:",
+        ]
+        for row in decisions[:200]:
+            if not isinstance(row, dict):
+                continue
+            email = row.get("email", "")
+            status = row.get("status", "")
+            reason = row.get("reason", "")
+            risk = row.get("risk_score", "")
+            lines.append(f"{email} | {status} | risk={risk} | {reason}")
+        if len(decisions) > 200:
+            lines.append(f"... {len(decisions) - 200} more rows")
+        return "\n".join(lines)
 
     def _on_start_click(self) -> None:
         config = self._build_run_config()
@@ -739,6 +1026,9 @@ class QtDashboardWindow(QMainWindow):
             self.runtime_snapshot = None
         self.summary_snapshot = build_source_summary(self.current_source()).as_dict()
         self._populate_output_options()
+        if hasattr(self, "outreach_contact_file_input"):
+            self.outreach_contact_file_input.clear()
+            self._seed_outreach_contact_file()
         self._refresh_dashboard()
 
     def current_source(self) -> str:
@@ -794,6 +1084,7 @@ class QtDashboardWindow(QMainWindow):
         self.device_id_input.setText(get_device_id())
         self.log_console.clear()
         self.summary_snapshot = build_source_summary(self.current_source()).as_dict()
+        self._seed_outreach_contact_file()
 
     def _append_log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
