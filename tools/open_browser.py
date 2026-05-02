@@ -13,6 +13,7 @@ from playwright.async_api import async_playwright
 if __package__ in {None, ""}:
     raise SystemExit("Run this helper as `python -m tools.open_browser` from the project root.")
 
+from scraper.access_control import require_app_access  # pylint: disable=wrong-import-position
 from scraper.browser_launcher import (  # pylint: disable=wrong-import-position
     launch_persistent_browser,
 )
@@ -54,6 +55,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """Start the asynchronous manual browser helper."""
+    require_app_access()
     args = parse_args()
     asyncio.run(run(normalize_helper_url(args.url)))
 

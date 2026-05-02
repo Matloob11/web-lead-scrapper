@@ -1,10 +1,10 @@
 """Regression coverage for the user-facing scraper with local-only startup."""
 
-import inspect
 import io
 import sys
 import unittest
 from contextlib import redirect_stdout
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import desktop_app.services.scraper_service as scraper_service_module
@@ -14,21 +14,6 @@ from desktop_app.services.scraper_service import ScraperDashboardService
 
 
 class LocalCleanModeTests(unittest.TestCase):
-    def test_cli_entry_points_do_not_accept_removed_access_parameters(self):
-        run_signature = inspect.signature(houzz_pro_scraper.run_scraper)
-        export_signature = inspect.signature(houzz_pro_scraper.export_final_for_source)
-
-        removed_run_params = {
-            "access_identity",
-            "device_id",
-            "access_prechecked",
-            "track_activity",
-        }
-        self.assertTrue(removed_run_params.isdisjoint(run_signature.parameters))
-        self.assertNotIn("access_identity", export_signature.parameters)
-        self.assertNotIn("device_id", export_signature.parameters)
-        self.assertNotIn("access_prechecked", export_signature.parameters)
-
     def test_cli_parser_no_longer_exposes_device_id_option(self):
         help_output = io.StringIO()
 
@@ -42,20 +27,50 @@ class LocalCleanModeTests(unittest.TestCase):
         self.assertEqual(exc_context.exception.code, 0)
         self.assertNotIn("--device" + "-id", help_output.getvalue())
 
-    def test_dashboard_service_starts_without_remote_gate_or_usage_api(self):
+    def test_cli_main_checks_access_before_export(self):
+        args = SimpleNamespace(
+            source="houzz",
+            export_final_only=True,
+            quality_filter=("high",),
+            url="",
+            max_pages=None,
+            max_profiles=None,
+            headless=False,
+            skip_facebook=False,
+            country="",
+            skip_google_fallback=False,
+            no_final_export=False,
+            retry_no_email=False,
+            out_filename=None,
+        )
+
+        with (
+            patch.object(houzz_pro_scraper, "parse_args", return_value=args),
+            patch.object(houzz_pro_scraper, "require_app_access") as require_access,
+            patch.object(houzz_pro_scraper, "export_final_for_source", side_effect=SystemExit(0)),
+            self.assertRaises(SystemExit),
+        ):
+            houzz_pro_scraper.main()
+
+        require_access.assert_called_once()
+
+    def test_dashboard_service_checks_remote_gate_before_start(self):
         service = ScraperDashboardService()
         fake_thread = MagicMock()
 
-        with patch.object(scraper_service_module.threading, "Thread", return_value=fake_thread):
+        with (
+            patch.object(scraper_service_module, "require_app_access") as require_access,
+            patch.object(scraper_service_module.threading, "Thread", return_value=fake_thread),
+        ):
             started = service.start_run(
                 ScraperRunConfig(
                     url="https://www.houzz.com/professionals",
                     source="houzz",
                 )
-        )
+            )
 
         self.assertTrue(started)
-        self.assertFalse(hasattr(scraper_service_module, "_".join(("db", "manager"))))
+        require_access.assert_called_once()
         fake_thread.start.assert_called_once()
 
 

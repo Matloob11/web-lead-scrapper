@@ -10,6 +10,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth  # type: ignore[import-untyped]
 
+from scraper.access_control import require_app_access
 from scraper.browser_helpers import goto_with_retry
 from scraper.browser_launcher import launch_persistent_browser
 from scraper.config import (
@@ -477,6 +478,7 @@ def parse_args():
 def main() -> None:
     """Parse CLI arguments and launch the appropriate scraper."""
     args = parse_args()
+    require_app_access()
     source = normalize_source(args.source) if args.source else prompt_source()
 
     if args.export_final_only:

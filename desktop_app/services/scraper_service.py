@@ -23,6 +23,7 @@ from desktop_app.services.outreach_service import (
     validate_contact_source_path,
 )
 from houzz_pro_scraper import export_final_for_source, run_scraper
+from scraper.access_control import require_app_access
 from scraper.config import PROJECT_ROOT
 from scraper.runtime import ScraperRuntimeController
 
@@ -107,9 +108,19 @@ class ScraperDashboardService:
         self._emit("summary", {"summary": summary.as_dict()})
         return summary
 
+    def _check_remote_access(self):
+        try:
+            require_app_access(logger=self._emit_log)
+            return True
+        except SystemExit:
+            self._emit("task", {"status": "blocked"})
+            return False
+
     def start_run(self, config):
         with self._lock:
             if self._thread is not None:
+                return False
+            if not self._check_remote_access():
                 return False
 
             self._runtime.start_run(
@@ -204,6 +215,8 @@ class ScraperDashboardService:
         with self._lock:
             if self._thread is not None:
                 return False
+            if not self._check_remote_access():
+                return False
             self._mode = "export"
             self._thread = threading.Thread(
                 target=self._run_export_task,
@@ -235,6 +248,8 @@ class ScraperDashboardService:
     def analyze_outreach(self, config: OutreachRunConfig):
         """Load contacts and return a dry-run outreach plan."""
         validate_contact_source_path(config.contact_file, project_root=PROJECT_ROOT)
+        if not self._check_remote_access():
+            raise PermissionError("Access denied by remote admin gate.")
         contacts = load_contacts_from_csv(config.contact_file)
         campaign = build_campaign_config(config)
         plan = self._outreach.plan_campaign(contacts, campaign)
@@ -267,6 +282,8 @@ class ScraperDashboardService:
 
         with self._lock:
             if self._thread is not None:
+                return False
+            if not self._check_remote_access():
                 return False
             self._mode = "outreach"
             self._thread = threading.Thread(

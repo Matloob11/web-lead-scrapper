@@ -28,7 +28,23 @@ Or run a source directly:
 .\.venv\Scripts\python.exe houzz_pro_scraper.py --source bbb --url "BBB_SEARCH_URL"
 ```
 
-Direct CLI runs and the desktop dashboard start locally with no remote gate.
+Direct CLI runs and the desktop dashboard require Supabase access approval.
+
+## Access Control
+
+The app checks Supabase before starting the CLI, desktop dashboard, manual
+browser helpers, export jobs, or outreach jobs. If the current device/user is
+pending, rejected, blocked, or Supabase cannot respond, the app stops with a
+clear access or technical error.
+
+Setup guide:
+
+```powershell
+.\.venv\Scripts\python.exe -m tools.test_supabase_connection
+```
+
+Full details are in `docs/access_control.md`. The approval dashboard lives
+outside this project at `..\matloob_admin_panel`.
 
 ## Output
 

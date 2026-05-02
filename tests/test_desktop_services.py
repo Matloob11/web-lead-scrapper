@@ -286,13 +286,16 @@ class DesktopServiceTests(unittest.TestCase):
 
         self.assertTrue(any(event["type"] == "outreach" for event in events))
 
-    def test_dashboard_service_starts_scrape_without_access_control_gate(self):
+    def test_dashboard_service_checks_access_before_scrape_start(self):
         service = ScraperDashboardService()
         fake_thread = MagicMock()
 
-        with patch(
-            "desktop_app.services.scraper_service.threading.Thread",
-            return_value=fake_thread,
+        with (
+            patch("desktop_app.services.scraper_service.require_app_access") as require_access,
+            patch(
+                "desktop_app.services.scraper_service.threading.Thread",
+                return_value=fake_thread,
+            ),
         ):
             started = service.start_run(
                 ScraperRunConfig(
@@ -302,7 +305,29 @@ class DesktopServiceTests(unittest.TestCase):
             )
 
         self.assertTrue(started)
+        require_access.assert_called_once()
         fake_thread.start.assert_called_once()
+
+    def test_dashboard_service_blocks_scrape_when_access_denied(self):
+        service = ScraperDashboardService()
+
+        with (
+            patch(
+                "desktop_app.services.scraper_service.require_app_access",
+                side_effect=SystemExit(1),
+            ),
+            patch("desktop_app.services.scraper_service.threading.Thread") as thread_class,
+        ):
+            started = service.start_run(
+                ScraperRunConfig(
+                    url="https://www.houzz.com/professionals",
+                    source="houzz",
+                )
+            )
+
+        self.assertFalse(started)
+        thread_class.assert_not_called()
+        self.assertFalse(service.get_state()["busy"])
 
     def test_runtime_controller_tracks_progress_and_completion(self):
         runtime = ScraperRuntimeController()

@@ -186,6 +186,32 @@ class SMTPSettings:
             use_tls=use_tls_value not in {"0", "false", "no"},
         )
 
+    @classmethod
+    def load_all(cls, path: Path) -> list[SMTPSettings]:
+        """Load multiple sender accounts from a CSV file."""
+        if not path.exists():
+            return []
+        settings_list = []
+        with path.open(encoding="utf-8", newline="") as file_obj:
+            reader = csv.DictReader(file_obj)
+            for row in reader:
+                email = normalize_email(row.get("email", ""))
+                # Prefer app_password if present, fallback to password
+                password = (row.get("app_password") or row.get("password") or "").strip()
+                if email and password:
+                    settings_list.append(
+                        cls(
+                            host="smtp.gmail.com",  # Default to Gmail for these provided accounts
+                            port=587,
+                            username=email,
+                            password=password,
+                            from_email=email,
+                            from_name=email.split("@")[0],
+                            use_tls=True,
+                        )
+                    )
+        return settings_list
+
 
 @dataclass(frozen=True)
 class SpamRiskReport:
@@ -252,6 +278,7 @@ class EmailOutreachService:
         self.suppression_file = self.state_dir / "suppression_list.csv"
         self.sent_ledger_file = self.state_dir / "sent_ledger.csv"
         self.tracking_file = self.state_dir / "tracking_events.csv"
+        self.senders_file = self.state_dir / "senders.csv"
         self._ensure_csv(self.suppression_file, SUPPRESSION_HEADERS)
         self._ensure_csv(self.sent_ledger_file, SENT_LEDGER_HEADERS)
         self._ensure_csv(self.tracking_file, TRACKING_HEADERS)
@@ -434,90 +461,142 @@ class EmailOutreachService:
         rng: random.Random | None = None,
         logger: Any = None,
     ) -> CampaignPlan:
-        """Plan and send eligible campaign messages.
-
-        Dry-run campaigns never use transport and never write the sent ledger.
-        Actual sends are recorded only after the transport accepts the message.
-        """
+        """Plan and send eligible campaign messages using multiple accounts if available."""
         plan = self.plan_campaign(contacts, config)
         if config.dry_run:
             return plan
 
-        settings = smtp_settings or SMTPSettings.from_env()
-        active_transport = transport or SmtpEmailTransport(settings)
+        # Load multiple senders or fallback to single env-based settings
+        senders = SMTPSettings.load_all(self.senders_file)
+        if not senders:
+            if logger:
+                logger("[OUTREACH] No senders.csv found or empty. Using default account from env.")
+            senders = [smtp_settings or SMTPSettings.from_env()]
+
         randomizer = rng or random.Random()
-        sent_this_session = 0
-        completed: list[RecipientDecision] = []
 
-        for decision in plan.decisions:
-            if decision.status != "queued":
-                completed.append(decision)
-                continue
-            if sent_this_session >= max(0, config.session_limit):
-                completed.append(
-                    replace_decision(
-                        decision,
-                        status="session_limit",
-                        reason="session_limit_reached",
+        # Filter only queued decisions
+        queued_indices = [i for i, d in enumerate(plan.decisions) if d.status == "queued"]
+        if not queued_indices:
+            return plan
+
+        if logger:
+            msg = (
+                f"[OUTREACH] Starting campaign with {len(senders)} sender accounts "
+                f"for {len(queued_indices)} leads."
+            )
+            logger(msg)
+
+        # Round-robin assignment logic: Divide leads among senders
+        # We process in batches where each sender sends one email per delay cycle
+        sender_count = len(senders)
+        transports = [transport or SmtpEmailTransport(s) for s in senders]
+
+        completed_map: dict[int, RecipientDecision] = {
+            i: d for i, d in enumerate(plan.decisions) if d.status != "queued"
+        }
+
+        # Calculate how many batches we need
+        total_leads = len(queued_indices)
+        num_batches = (total_leads + sender_count - 1) // sender_count
+
+        sent_counts = [0] * sender_count
+
+        for b in range(num_batches):
+            batch_start_time = time.time()
+
+            # Sub-batch: Each sender tries to send one email
+            for s_idx in range(sender_count):
+                lead_idx_in_queued = b * sender_count + s_idx
+                if lead_idx_in_queued >= total_leads:
+                    break
+
+                original_index = queued_indices[lead_idx_in_queued]
+                decision = plan.decisions[original_index]
+                current_sender = senders[s_idx]
+                current_transport = transports[s_idx]
+
+                # Check session limit for this specific sender
+                if sent_counts[s_idx] >= config.session_limit:
+                    reason = (
+                        f"Limit reached for {current_sender.username}"
                     )
-                )
-                continue
+                    completed_map[original_index] = replace_decision(
+                        decision, status="session_limit", reason=reason
+                    )
+                    continue
 
-            if sent_this_session > 0:
-                delay = randomizer.uniform(config.min_delay_seconds, config.max_delay_seconds)
-                if logger:
-                    logger(f"[OUTREACH] Waiting {delay:.1f}s before next email.")
-                sleep_fn(delay)
+                # Add a tiny stagger between different accounts (2-4 seconds)
+                # so they don't hit the SMTP server at the EXACT same millisecond
+                if s_idx > 0:
+                    sleep_fn(randomizer.uniform(2.0, 4.0))
 
-            try:
-                message = build_email_message(
-                    settings,
-                    Contact(decision.email, permission_status="verified"),
-                    config,
-                    subject=decision.subject,
-                    body=decision.body,
-                )
-                message_id = active_transport.send(message)
-                sent_this_session += 1
-                self.record_sent(
-                    email=decision.email,
-                    campaign_id=config.campaign_id,
-                    subject=decision.subject,
-                    variant=decision.variant,
-                    status="sent",
-                    reason="delivered_to_smtp",
-                    message_id=message_id,
-                )
-                if logger:
-                    logger(f"[OUTREACH] Sent to {decision.email}")
-                completed.append(
-                    replace_decision(
-                        decision,
+                try:
+                    message = build_email_message(
+                        current_sender,
+                        Contact(decision.email, permission_status="verified"),
+                        config,
+                        subject=decision.subject,
+                        body=decision.body,
+                    )
+                    message_id = current_transport.send(message)
+                    sent_counts[s_idx] += 1
+
+                    self.record_sent(
+                        email=decision.email,
+                        campaign_id=config.campaign_id,
+                        subject=decision.subject,
+                        variant=decision.variant,
                         status="sent",
-                        reason="delivered_to_smtp",
+                        reason=f"sent_via_{current_sender.username}",
                         message_id=message_id,
                     )
-                )
-            except (OSError, smtplib.SMTPException, ValueError) as exc:
-                self.record_sent(
-                    email=decision.email,
-                    campaign_id=config.campaign_id,
-                    subject=decision.subject,
-                    variant=decision.variant,
-                    status="failed",
-                    reason=str(exc),
-                )
-                completed.append(
-                    replace_decision(
+                    if logger:
+                        logger(f"[OUTREACH] [{current_sender.username}] -> {decision.email} (Sent)")
+
+                    completed_map[original_index] = replace_decision(
                         decision,
+                        status="sent",
+                        reason=f"sent_via_{current_sender.username}",
+                        message_id=message_id,
+                    )
+                except (OSError, smtplib.SMTPException, ValueError) as exc:
+                    self.record_sent(
+                        email=decision.email,
+                        campaign_id=config.campaign_id,
+                        subject=decision.subject,
+                        variant=decision.variant,
                         status="failed",
                         reason=str(exc),
                     )
-                )
+                    if logger:
+                        msg = (
+                            f"[OUTREACH] [{current_sender.username}] "
+                            f"-> {decision.email} (Failed: {exc})"
+                        )
+                        logger(msg)
+                    completed_map[original_index] = replace_decision(
+                        decision, status="failed", reason=str(exc)
+                    )
 
+            # Wait for the remainder of the delay before the next batch
+            if b < num_batches - 1:
+                delay = randomizer.uniform(config.min_delay_seconds, config.max_delay_seconds)
+                elapsed = time.time() - batch_start_time
+                remaining = max(0.1, delay - elapsed)
+                if logger:
+                    msg = (
+                        f"[OUTREACH] Batch {b+1} done. Waiting {remaining:.1f}s "
+                        f"(Total delay {delay:.1f}s)"
+                    )
+                    logger(msg)
+                sleep_fn(remaining)
+
+        # Re-assemble the results in original order
+        final_decisions = [completed_map[i] for i in range(len(plan.decisions))]
         return CampaignPlan(
-            decisions=completed,
-            summary=summarize_decisions(completed),
+            decisions=final_decisions,
+            summary=summarize_decisions(final_decisions),
             compliance_issues=plan.compliance_issues,
         )
 
@@ -542,10 +621,10 @@ def utc_now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def get_field(row: dict[str, str], field: str) -> str:
+def get_field(row: dict[str, str], field_name: str) -> str:
     """Read a CSV row field using common aliases."""
     lowered = {str(key).strip().lower(): value for key, value in row.items()}
-    for alias in CONTACT_FIELD_ALIASES[field]:
+    for alias in CONTACT_FIELD_ALIASES[field_name]:
         alias_key = alias.strip().lower()
         if alias_key in lowered:
             return str(lowered[alias_key] or "").strip()

@@ -11,6 +11,7 @@ from playwright.async_api import async_playwright
 if __package__ in {None, ""}:
     raise SystemExit("Run this helper as `python -m tools.login_helper` from the project root.")
 
+from scraper.access_control import require_app_access  # pylint: disable=wrong-import-position
 from scraper.browser_launcher import (  # pylint: disable=wrong-import-position
     launch_persistent_browser,
 )
@@ -37,6 +38,7 @@ async def run() -> None:
 
 def main() -> None:
     """Start the asynchronous login helper."""
+    require_app_access()
     asyncio.run(run())
 
 
